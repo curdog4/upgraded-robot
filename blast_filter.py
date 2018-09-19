@@ -47,7 +47,8 @@ def check_bitscore(alignment, max_bitscore, max_variance):
     return False
  
 def check_coverage(alignment, query, min_coverage):
-    alen = float(alignment.get('alignment_length'))
+    # multiply alignment length, which is protein sequence length, by 3 to get codon sequence length
+    alen = float(alignment.get('alignment_length') * 3)
     qlen = float(len(query.get('sequence')))
     logger.info('Alignment length:%d, query length:%d', alen, qlen)
     coverage = alen / qlen * 100.0
@@ -125,7 +126,7 @@ def run_blast(blast, qfile, sdb):
     '''
     blast -query results/PPC3.cds -db data/Alyrata/Alyrata_384_v2.1.protein.fa -out results/PPC-Alyrata_family.align -evalue 1e-50 -num_threads 4 -outfmt 7
     '''
-    logger.debug('Running: %s', ' '.join(opts))
+    logger.info('Running: %s', ' '.join(opts))
     result = subprocess.run(opts, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         logger.error('BLAST %s returned non-zero %d: %s', blast, result.returncode, result.stderr.decode())
