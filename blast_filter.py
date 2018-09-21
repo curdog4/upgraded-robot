@@ -52,7 +52,9 @@ def check_coverage(alignment, query, min_coverage):
     qlen = float(len(query.get('sequence')))
     logger.info('Alignment length:%d, query length:%d', alen, qlen)
     coverage = alen / qlen * 100.0
-    alignment.update({'coverage': coverage})
+    coverage2 = alen / float(alignment.get('query_end')) * 100.0
+    logger.info('Coverage comparison: %.1f vs. %.1f', coverage, coverage2)
+    alignment.update({'coverage': coverage, 'coverage2': coverage2})
     if coverage < min_coverage:
         return coverage
     return False
@@ -115,7 +117,7 @@ def parse_result(rtext):
             'subject_start': int(fields[8]),
             'subject_end': int(fields[9]),
             'evalue': float(fields[10]),
-            'bit_score': int(fields[11])
+            'bit_score': float(fields[11])
           })
 
     return data
@@ -126,12 +128,15 @@ def run_blast(blast, qfile, sdb):
     '''
     blast -query results/PPC3.cds -db data/Alyrata/Alyrata_384_v2.1.protein.fa -out results/PPC-Alyrata_family.align -evalue 1e-50 -num_threads 4 -outfmt 7
     '''
+    '''
     logger.info('Running: %s', ' '.join(opts))
     result = subprocess.run(opts, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
         logger.error('BLAST %s returned non-zero %d: %s', blast, result.returncode, result.stderr.decode())
         sys.exit(1)
     rdata = result.stdout.decode()
+    '''
+    rdata = sys.stdin.read()
     logger.info('BLAST results data:\n%s', rdata)
     qresult = parse_result(rdata)
     return qresult
@@ -255,12 +260,17 @@ def main():
         else:
             data.update({sid: [aln]})
 
-    logger.info('Filtered data:\n%s', json.dumps(data, indent=4))
+    logger.info('Filtered data, %d records', len(data))
 
+    # need to output as blast outfmt 6
+    #AL8G30230.t1	LOC_Os08g08840.1	83.59	323	49	1	187	1155	68	386	9e-160	459
+    for seq in data.values():
+        for rec in seq:
+            logger.info('Record: %s', json.dumps(rec))
+            outline = '{query_id:s}\t{subject_id:s}\t{pct_identity:.1f}\t{alignment_length:d}\t{mismatches:d}\t{gaps:d}\t{query_start:d}\t{query_end:d}\t{subject_start:d}\t{subject_end:d}\t{evalue:.0e}\t{bit_score:g}\n'.format(**rec)
+            sys.stdout.write(outline)
     logger.info('Complete')
     return 0
-
-
 
 
 if __name__ == '__main__':
