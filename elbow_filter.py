@@ -4,10 +4,8 @@ import os
 import sys
 import logging
 import argparse
-import numpy as np
 import pandas
 from sklearn.cluster import KMeans
-#from scipy.spacial.distance import cdist
 
 logger = logging.getLogger('ElbowFilter')
 logger.setLevel(logging.DEBUG)
