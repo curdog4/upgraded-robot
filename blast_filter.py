@@ -267,7 +267,10 @@ def main():
     for seq in data.values():
         for rec in seq:
             logger.info('Record: %s', json.dumps(rec))
-            outline = '{query_id:s}\t{subject_id:s}\t{pct_identity:.1f}\t{alignment_length:d}\t{mismatches:d}\t{gaps:d}\t{query_start:d}\t{query_end:d}\t{subject_start:d}\t{subject_end:d}\t{evalue:.0e}\t{bit_score:g}\n'.format(**rec)
+            try:
+                outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+            except ValueError:
+                outline = '{0:s}\t{1:d}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist()) 
             sys.stdout.write(outline)
     logger.info('Complete')
     return 0

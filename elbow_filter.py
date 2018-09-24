@@ -37,7 +37,10 @@ def main():
             # only interested in first cluster
             continue
         #logger.info('Loci: %s, Score: %s', loci.values[i].item(), scores.values[i].item())
-        outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+        try:
+            outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+        except ValueError:
+            outline = '{0:s}\t{1:d}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
         sys.stdout.write(outline)
 
 
