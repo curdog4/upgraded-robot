@@ -8,6 +8,8 @@ import tempfile
 import textwrap
 import subprocess
 
+from Bio import SeqIO
+
 import logging 
 logger = logging.getLogger('BlastFilter')
 logger.setLevel(logging.DEBUG)
@@ -75,24 +77,28 @@ def check_identity(alignment, pct_identity):
         return True
     return False
 
-def get_sequence_data(seqid, dbh):
-    data = {}
+def get_sequence_data(dbh, seqid=None):
+    data = []
     dbh.seek(0)
-    fdata = dbh.read()
-    records = fdata.split('>')
-    for record in records:
-        if record.startswith(seqid):
-            lines = record.splitlines()
-            data = {
-                'identity': lines[0],
-                'sequence': ''.join(lines[1:]),
-                'text': '>' + record,
-            }
-            break
+    for record in SeqIO.parse(dbh, 'fasta'):
+        if seqid:
+            if record.id == seqid:
+                data.append({
+                    'identity': record.id,
+                    'sequence': '%s' % record.seq,
+                    'text': record.format('fasta')
+                })
+                break
+        else:
+            data.append({
+                'identity': record.id,
+                'sequence': record.seq,
+                'text': record.format('fasta')
+            })
     return data
 
 def make_query(seqid, qdb):
-    query = get_sequence_data(seqid, qdb)
+    query = get_sequence_data(qdb, seqid)[0]
     return query
 
 def parse_result(rtext):
@@ -122,19 +128,8 @@ def parse_result(rtext):
 
     return data
 
-def run_blast(blast, qfile, sdb):
-    opts = [blast, '-evalue', '1e-50', '-num_threads', '15', '-outfmt', '7',
-            '-query', qfile, '-db', sdb.name]
-    '''
-    blast -query results/PPC3.cds -db data/Alyrata/Alyrata_384_v2.1.protein.fa -out results/PPC-Alyrata_family.align -evalue 1e-50 -num_threads 4 -outfmt 7
-    '''
-    '''
-    logger.info('Running: %s', ' '.join(opts))
-    result = subprocess.run(opts, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        logger.error('BLAST %s returned non-zero %d: %s', blast, result.returncode, result.stderr.decode())
-        sys.exit(1)
-    rdata = result.stdout.decode()
+def run_blast():
+    '''Now, just reading from STDIN
     '''
     rdata = sys.stdin.read()
     logger.info('BLAST results data:\n%s', rdata)
@@ -185,81 +180,73 @@ def main():
         logger.error('There were errors processing command-line arguments. Aborting.')
         return 1
     clean_qfile = False
-    query = None
     if args.id:
-        query = make_query(args.id, args.query_cds)
-        qfile = write_query_file(query)
+        qfile = open(write_query_file(make_query(args.id, args.query_cds)), 'r')
         clean_qfile = True
         logger.debug('Query: %s', query)
     elif args.query_file:
-        qfile = args.query_file.name
-        #logger.warning('Run using a query file not yet implemented...')
-        #return 1
+        qfile = args.query_file
     else:
         logger.info('Running against entire query CDS database.')
-        qfile = args.query_cds.name
-        #logger.warning('Run against entire query CDS database not yet implemented...')
-        #return 1
+        qfile = args.query_cds
 
-    result = run_blast(args.blast, qfile, args.subject_prot)
+    qdata = get_sequence_data(qfile)
+
+    result = run_blast()
+    for qry in qdata:
+        for aln in result:
+            logger.debug('Alignment data: %s', aln)
+            sid = aln.get('subject_id')
+            qid = aln.get('query_id')
+            if qry['identity'] != qid:
+                 logger.debug('Skip result not related to this query sequence ID: %s != %s', qry['identity'], qid)
+                 continue
+            result_subset = [x for x in result if x['query_id'] == qid]
+            subject = get_sequence_data(args.subject_cds, sid)
+            #if not 'query' in globals():
+            #    query = get_sequence_data(args.query_cds, qid)
+            logger.info('Query length is %d', len(qry.get('sequence')))
+            if args.coverage:
+                coverage_pct = check_coverage(aln, qry, args.coverage)
+                logger.info('Coverage for %s is %3f', sid, aln.get('coverage'))
+                if coverage_pct:
+                    logger.warning('Dropping %s due to poor coverage (<%.1f%%): %.1f', sid, args.coverage, coverage_pct)
+                    continue
+            if args.count:
+                subject_list = [x.get('subject_id') for x in result_subset]
+                count = subject_list.count(sid)
+                if check_count(count, args.count):
+                    logger.warning('Dropping %s due to high incident count (>2): %d', sid, count)
+                    continue
+            if args.identity:
+                if check_identity(aln, args.identity):
+                    logger.warning('Dropping %s due to low identity (<60.0%%): %3f', sid, aln.get('pct_identity'))
+                    continue
+            if args.evalue:
+                evalue_scores = list(set([x.get('evalue') for x in result_subset]))
+                evalue_scores.sort()
+                if evalue_scores[0] == 0:
+                    evalue_scores.pop(0)
+                logger.debug('E-value scores: %s', evalue_scores)
+                min_evalue = evalue_scores[0]
+                if check_evalue(aln, min_evalue, args.evalue):
+                    logger.warning('Dropping %s due to poor e-value (>5%% of highest e-value score %.1e): %.1e', sid, min_evalue, aln.get('evalue'))
+                    continue
+            if args.bitscore:
+                bit_scores = list(set([x.get('bit_score') for x in result_subset]))
+                bit_scores.sort()
+                max_bitscore = bit_scores[-1]
+                if check_bitscore(aln, max_bitscore, args.bitscore):
+                    logger.warning('Dropping %s due to low bit score (<5%% of highest bit score %d): %d', sid, max_bitscore, aln.get('bit_score'))
+                    continue
+
+            if data.get(sid):
+                data[sid].append(aln)
+            else:
+                data.update({sid: [aln]})
+
     if clean_qfile:
         os.unlink(qfile)
-    for aln in result:
-        logger.debug('Alignment data: %s', aln)
-        sid = aln.get('subject_id')
-        if sid.endswith('.p'):
-            sid = sid[0:-2]
-        if not sid.endswith('1'):
-            logger.warning('Dropping %s due to non-primary subject sequence', sid)
-            continue
-        qid = aln.get('query_id')
-        if not qid.endswith('1'):
-            logger.warning('Dropping %s due to non-primary query sequence', qid)
-            continue
-        result_subset = [x for x in result if x['query_id'] == qid]
-        subject = get_sequence_data(sid, args.subject_cds)
-        if not 'query' in globals():
-            query = get_sequence_data(qid, args.query_cds)
-        logger.info('Query length is %d', len(query.get('sequence')))
-        if args.coverage:
-            coverage_pct = check_coverage(aln, query, args.coverage)
-            logger.info('Coverage for %s is %3f', sid, aln.get('coverage'))
-            if coverage_pct:
-                logger.warning('Dropping %s due to poor coverage (<%.1f%%): %.1f', sid, args.coverage, coverage_pct)
-                continue
-        if args.count:
-            subject_list = [x.get('subject_id') for x in result_subset]
-            count = subject_list.count(sid)
-            if check_count(count, args.count):
-                logger.warning('Dropping %s due to high incident count (>2): %d', sid, count)
-                continue
-        if args.identity:
-            if check_identity(aln, args.identity):
-                logger.warning('Dropping %s due to low identity (<60.0%%): %3f', sid, aln.get('pct_identity'))
-                continue
-        if args.evalue:
-            evalue_scores = list(set([x.get('evalue') for x in result_subset]))
-            evalue_scores.sort()
-            if evalue_scores[0] == 0:
-                evalue_scores.pop(0)
-            logger.debug('E-value scores: %s', evalue_scores)
-            min_evalue = evalue_scores[0]
-            if check_evalue(aln, min_evalue, args.evalue):
-                logger.warning('Dropping %s due to poor e-value (>5%% of highest e-value score %.1e): %.1e', sid, min_evalue, aln.get('evalue'))
-                continue
-        if args.bitscore:
-            bit_scores = list(set([x.get('bit_score') for x in result_subset]))
-            bit_scores.sort()
-            max_bitscore = bit_scores[-1]
-            if check_bitscore(aln, max_bitscore, args.bitscore):
-                logger.warning('Dropping %s due to low bit score (<5%% of highest bit score %d): %d', sid, max_bitscore, aln.get('bit_score'))
-                continue
-
-        if data.get(sid):
-            data[sid].append(aln)
-        else:
-            data.update({sid: [aln]})
-
     logger.info('Filtered data, %d records', len(data))
 
     # need to output as blast outfmt 6
@@ -268,9 +255,9 @@ def main():
         for rec in seq:
             logger.info('Record: %s', json.dumps(rec))
             try:
-                outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+                outline = '{query_id:s}\t{subject_id:s}\t{pct_identity:.1f}\t{alignment_length:d}\t{mismatches:d}\t{gaps:d}\t{query_start:d}\t{query_end:d}\t{subject_start:d}\t{subject_end:d}\t{evalue:.0e}\t{bit_score:g}\n'.format(**rec)
             except ValueError:
-                outline = '{0:s}\t{1:d}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist()) 
+                outline = '{query_id:s}\t{subject_id:d}\t{pct_identity:.1f}\t{alignment_length:d}\t{mismatches:d}\t{gaps:d}\t{query_start:d}\t{query_end:d}\t{subject_start:d}\t{subject_end:d}\t{evalue:.0e}\t{bit_score:g}\n'.format(**rec)
             sys.stdout.write(outline)
     logger.info('Complete')
     return 0
