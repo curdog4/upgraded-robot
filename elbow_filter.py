@@ -32,8 +32,10 @@ def main():
     kmeans = KMeans(n_clusters=args.clusters).fit(scores)
     logger.info('Centers: %s', kmeans.cluster_centers_.tolist())
     logger.info('Labels: %s', kmeans.labels_.tolist())
+    lci = kmeans.cluster_centers_.tolist().index(max(kmeans.cluster_centers_))
+    logger.info('Largest centroid index: %d', lci)
     for i, l in enumerate(kmeans.labels_):
-        if l != 0:
+        if l != lci:
             # only interested in first cluster
             continue
         #logger.info('Loci: %s, Score: %s', loci.values[i].item(), scores.values[i].item())
