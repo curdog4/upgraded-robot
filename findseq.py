@@ -3,21 +3,19 @@
 import os
 import sys
 import logging
-from argparse import ArgumentParser
+import argparse
 from Bio import SeqIO, BiopythonWarning
-from Bio.Alphabet import generic_dna
 from Bio.Data import CodonTable
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-logger = logging.getLogger('CDS2Prot')
+logger = logging.getLogger('FindSeq')
 logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler()
 handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s %(levelname)s: %(funcName)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
-
 
 class ORFFinder:
     """Find the longest ORF in a given sequence
@@ -84,7 +82,6 @@ class ORFFinder:
         if L > self.winner:
             self.winner = L
             self.result = (direction, frame_number+1, orf_start, orf_end, L)
-
     def run(self):
         direction = "+"
         for frame in range(3):
@@ -93,12 +90,6 @@ class ORFFinder:
         self.seq = self._reverse_comp()
         for frame in range(3):
             self.run_one(frame, direction)
-        #self._print_current()
-
-def find_ORF(seq_string):
-    finder = ORFFinder(seq_string)
-    finder.run()
-    return finder
 
 def seq_is_mod_three(sequence):
     if type(sequence) is str:
@@ -111,8 +102,6 @@ def seq_is_mod_three(sequence):
         raise TypeError('Unrecognized type for sequence: %s', type(sequence))
 
 def begin_start_codon(sequence, ctable):
-    #logger.info('Start codons: %s', ctable.start_codons)
-    #logger.info('Stop codons: %s', ctable.stop_codons)
     first_codon = ''
     if type(sequence) is str:
         first_codon = sequence[0:3]
@@ -122,19 +111,25 @@ def begin_start_codon(sequence, ctable):
         first_codon = str(sequence.seq)[0:3]
     else:
         raise TypeError('Unrecognized type for sequence: %s', type(sequence))
-    #logger.info('First codon is %s. Is it a start codon? %s', first_codon, bool(first_codon in ctable.start_codons))
     return bool(first_codon in ctable.start_codons)
 
 def main():
-    parser = ArgumentParser(description='Translate nucleotide to protein sequences')
+    parser = argparse.ArgumentParser(description='Translate nucleotide to protein sequences')
+    parser.add_argument('--correct', type=bool, default=False,
+                        help='ORF correction checking: divisible by three, start codon')
     parser.add_argument('--informat', type=str, default='fasta',
                         help='Format of input')
     parser.add_argument('--outformat', type=str, default='fasta',
                         help='Format of output')
     parser.add_argument('--xtable', type=int, default=1,
                         help='Codon translation table')
+    parser.add_argument('--first', type=bool, default=True,
+                        help='Stop after first match')
+    parser.add_argument('seqid', type=str,
+                        help='sequence ID to search for')
+    parser.add_argument('datasrc', type=argparse.FileType('r'),
+                        help='file containing sequences to search for the sequence ID')
     args = parser.parse_args()
-    logger.info('Piping sys.stdin through SeqIO to output CDS -> protein sequences...')
     logger.info('Input format is %s', args.informat)
     logger.info('Output format is %s', args.outformat)
     logger.info('Codon table is %d', args.xtable)
@@ -143,28 +138,21 @@ def main():
     else:
         ctable = CodonTable.unambiguous_dna_by_name[args.xtable]
     ridx = 0
-    for record in SeqIO.parse(sys.stdin, args.informat):
+    for record in SeqIO.parse(args.datasrc, args.informat):
         ridx += 1
         try:
-            orf = ORFFinder(str(record.seq), ctable.start_codons, ctable.stop_codons)
-            orf.run()
-            #logger.info('Find ORF returned %s', orf.result)
-            (d, f, s, e, l) = orf.result
-            rec = SeqRecord(Seq(str(record.seq[s-1:e])), id=record.id, description='description removed')
-            #logger.info('ORF Record:\n%s', rec.translate(args.xtable, id=record.id, description='description removed').format('fasta'))
-            if seq_is_mod_three(record):
-                logger.warning('Sequence %d length is not divisible by three. Using sequence from ORF search.', ridx)
-                #sys.stdout.write(rec.translate(args.xtable, id=record.id, description='description removed').format('fasta'))
-                record = rec
-            elif not begin_start_codon(record, ctable):
-                logger.warning('Sequence %d does not begin with a start codon. Using sequence from ORF search.', ridx)
-                #sys.stdout.write(rec.translate(args.xtable, id=record.id, description='description removed').format('fasta'))
-                record = rec
-            if len(record.translate(table=args.xtable, id=record.id, description='description removed')) == 0:
-                logger.error('Translated sequence is empty: %s', record.translate(table=args.xtable, id=record.id, description='description removed'))
-                continue
-            else:
-                sys.stdout.write(record.translate(table=args.xtable, id=record.id, description='description removed').format('fasta') + '\n')
+            if record.id == args.seqid:
+                if args.correct:
+                    orf = ORFFinder(str(record.seq), ctable.start_codons, ctable.stop_codons)
+                    orf.run()
+                    (d, f, s, e, l) = orf.result
+                    if seq_is_mod_three(record):
+                        record = SeqRecord(Seq(str(record.seq[s-1:e])), id=record.id, description='description removed')
+                    elif begin_start_codon(record, ctable):
+                        record = SeqRecord(Seq(str(record.seq[s-1:e])), id=record.id, description='description removed')
+                sys.stdout.write(record.format('fasta') + '\n')
+                if args.first:
+                    break
         except BiopythonWarning as err:
             logger.warn('Caught BiopythonWarning about sequence %d:\n%s\n\n%s', ridx, record, err)
 
