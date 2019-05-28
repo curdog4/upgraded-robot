@@ -53,7 +53,7 @@ class ORFFinder:
         return "".join(swap[b] for b in self.seq)
 
     def _print_current(self):
-        print "frame %s%s position %s:%s (%s nucleotides)" % self.result
+        print("frame %s%s position %s:%s (%s nucleotides)" % self.result)
 
     def codons(self, frame):
         """ A generator that yields DNA in one codon blocks
