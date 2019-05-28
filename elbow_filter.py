@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description='KMeans Elbow filtering of blast results')
     names = ['query_id', 'subject_id', 'pct_identity', 'alignment_length',
              'mismatches', 'gap_opens', 'query_start', 'query_end',
-             'subject_start', 'subject_end', 'evalue', 'bitscore']
+             'subject_start', 'subject_end', 'evalue', 'bitscore', 'query_length']
     parser.add_argument('--clusters', type=int, default=3,
                         help='Number of clusters to use in KMeans')
     parser.add_argument('--column', type=str, default='bitscore', choices=names,
@@ -40,9 +40,9 @@ def main():
             continue
         #logger.info('Loci: %s, Score: %s', loci.values[i].item(), scores.values[i].item())
         try:
-            outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+            outline = '{0:s}\t{1:s}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\t{12:d}\n'.format(*indata.values[i].tolist())
         except ValueError:
-            outline = '{0:s}\t{1:d}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\n'.format(*indata.values[i].tolist())
+            outline = '{0:s}\t{1:d}\t{2:.1f}\t{3:d}\t{4:d}\t{5:d}\t{6:d}\t{7:d}\t{8:d}\t{9:d}\t{10:.0e}\t{11:g}\t{12:d}\n'.format(*indata.values[i].tolist())
         sys.stdout.write(outline)
 
 
