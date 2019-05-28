@@ -21,6 +21,7 @@ Merged output files will be written to the specified output directory.
 
 import os
 import sys
+import glob
 import logging
 import argparse
 import subprocess
@@ -190,10 +191,49 @@ class Samtools():
         opts.insert(0, command)
 
 
+def findFiles(dname):
+    files = glob.glob(os.path.join(dname, '*_R*.fastq'))
+    pairdata = {}
+    for f in files:
+        base, _ = os.path.basename(f).split('_R')
+        if pairdata.get(base):
+            pairdata[base]['files'].append(f)
+            pairdata[base]['files'].sort()
+        else:
+            pairdata.update({base: {'files': [f]}})
+    return pairdata
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--topdir', type=str,
+                        help='Top-level directory containing paired-end sequence data input files')
+    parser.add_argument('--refseq', type=str,
+                        help='Reference sequence data file')
+    parser.add_argument('--outdir', type=str,
+                        help='Directory to write output files into')
 
     args = parser.parse()
+
+    if not os.path.exists(args.topdir):
+        logger.error('Top-level directory %s does not exist', args.topdir)
+        return 1
+    if not os.path.exists(args.refseq):
+        logger.error('Reference sequence file %s does not exist', args.refseq)
+        return 1
+    if os.path.exists(args.outdir):
+        logger.warning('Output directory %s exists, files may get overwritten', args.outdir)
+    pairdata = findFiles(args.topdir)
+    if not pairdata:
+        logger.error('No paired-end sequence data files found in %s', args.topdir)
+        return 1
+    for s in pairdata:
+        if not pairdata[s].get('files'):
+            pairdata.pop(s)
+    if not pairdata:
+        logger.error('No paired-end sequence data files found in %s', args.topdir)
+        return 1
+
     return 0
 
 
