@@ -26,66 +26,75 @@ import logging
 import argparse
 import subprocess
 
-logger = logging.getLogger('trimame')
+logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler()
 handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s %(levelname)s: %(filename)s[%(lineno)d](%funcName)s) - %(message)s',
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(filename)s[%(lineno)d](%(funcName)s) - %(message)s',
                               datefmt='%F %T')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
 class Trimmer():
-    def __init__(self, r1, r2, adapters=None):
-        for f in (r1, r2):
+    def __init__(self, filepairs, adapters=None):
+        for f in list(sum(filepairs, ())):
             if not os.path.exists(f):
-                raise IOError('File %s does not exist' % f)
-        self.r1 = r1
-        self.r2 = r2
+                raise IOError('File %s does not exist' % r1)
+        self.filepairs = filepairs
         if adapters:
             if not os.path.exists(adapters):
                 raise IOError('File %s does not exist' % adapters)
         self.adapters = adapters
         self.command = None
         self.options = []
+        self.sbatch_opts = []
 
     def trim(self, options=[]):
+        logger.debug('Trimming files with options: %s', options)
         if not options:
             options = self.options
-        command_options = [self.command]
-        command_options.extend(options)
-        try:
-            result = subprocess.run(command_options,
-                                    stderr=subprocess.PIPE,
-                                    stdout=subprocess.PIPE,
-                                    check=True)
-        except subprocess.CalledProcessError as err:
-            logger.error('An error occurred running %s: %s', self.command, err)
-            return None
+        for r1, r2 in self.filepairs:
+            command_options = [self.command]
+            command_options.extend(options)
+            command_options.extend([r1, r2])
+            wrapcmd = ' '.join(command_options)
+            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
+            result = sbatch.run()
+        return None
                                     
-
 
 class TrimGalore(Trimmer):
     def __init__(self, argc, **kwargs):
-
-
-    def trim(self, opts=[]):
+        ''' '''
+        super(TrimGalore, self).__init__(**kwargs)
+        if command in kwargs:
+            if os.path.exists(command):
+                self.command = command
+            else:
+                raise IOError('Command %s not found' % command)
+        else:
+            self.command = 'trim_galore'
+        self.options = ['--paired', '--retain_unpaired', '--cores', '4', '--max_n', '40', '--gzip']
+        self.sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
 
 
 class Trimomatic(Trimmer):
     def __init__(self, args, **kwargs):
-
+        ''' '''
 
     def trim(self, opts=[]):
+        ''' '''
+        return None
 
 
 class Cutadapt(Trimmer):
     def __init__(self, args, **kwargs):
-
+        ''' '''
 
     def trim(self, opts=[]):
-
+        ''' '''
+        return None
 
 
 class Aligner():
@@ -102,13 +111,13 @@ class Aligner():
         self.method = method
         if not options:
             if method == 'aln':
-                options = ['-q', 15, '-t', THREADS, '-f', outfile]
+                options = ['-q', 15, '-t', NTHREADS, '-f', outfile]
             elif method == 'mem':
                 options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
-                           '-t', THREADS, '-o', outfile]
+                           '-t', NTHREADS, '-o', outfile]
         self.options = options
 
-    def align(self), options=[]):
+    def align(self, options=[]):
         if not options:
             options = self.options
         command_options = [self.command, self.method]
@@ -124,8 +133,11 @@ class Aligner():
 
 class Merger():
     def __init__(self):
+        ''' '''
 
     def merge(self, opts={}):
+        ''' '''
+        return None
 
 
 class JavaJar():
@@ -151,7 +163,7 @@ class Sbatch():
         self.options = options
         self.wrapcmd = wrapcmd
 
-    def batch(options=[], wrapcmd=None):
+    def run(options=[], wrapcmd=None):
         command_options = [self.command]
         if not options:
             options = self.options
@@ -160,6 +172,8 @@ class Sbatch():
             wrapcmd = self.wrapcmd
         command_options.extend(['--wrap="%s"' % wrapcmd])
 
+        logger.info('Launching sbatch with: %s', command_options)
+        return True
         try:
             result = subprocess.run(command_options,
                                     stderr=subprocess.PIPE,
@@ -173,23 +187,28 @@ class Sbatch():
 
 class Samtools():
     def __init__(self):
-
+        ''' '''
 
     def flagstat(self, opts=[]):
-
+        ''' '''
+        return None
 
     def index(self, opts=[]):
-
+        ''' '''
+        return None
 
     def sort(self, opts=[]):
-
+        ''' '''
+        return None
 
     def view(self, opts=[]):
-
+        ''' '''
+        return None
 
     def run(self, command, opts=[]):
         opts.insert(0, command)
 
+        return None
 
 def findFiles(dname):
     files = glob.glob(os.path.join(dname, '*_R*.fastq'))
@@ -205,16 +224,26 @@ def findFiles(dname):
 
 
 def main():
+    logger.info('Starting')
+    trimopts = {
+        'trimgalore': TrimGalore,
+        'trimmomatic': Trimomatic,
+        'cutadapt': Cutadapt
+    }
     parser = argparse.ArgumentParser()
-    parser.add_argument('--topdir', type=str,
+    parser.add_argument('--topdir', type=str, required=True,
                         help='Top-level directory containing paired-end sequence data input files')
-    parser.add_argument('--refseq', type=str,
+    parser.add_argument('--refseq', type=str, required=True,
                         help='Reference sequence data file')
-    parser.add_argument('--outdir', type=str,
+    parser.add_argument('--outdir', type=str, required=True,
                         help='Directory to write output files into')
+    parser.add_argument('--trimmer', type=str, choices=trimopts.keys(), default='trimmomatic',
+                        help='Tool to use for sequence trimming')
 
-    args = parser.parse()
+    logger.info('Proccessing arguments')
+    args = parser.parse_args()
 
+    logger.info('Verifying arguments')
     if not os.path.exists(args.topdir):
         logger.error('Top-level directory %s does not exist', args.topdir)
         return 1
@@ -223,6 +252,10 @@ def main():
         return 1
     if os.path.exists(args.outdir):
         logger.warning('Output directory %s exists, files may get overwritten', args.outdir)
+    else:
+        os.mkdir(args.outdir)
+
+    logger.info('Finding input data')
     pairdata = findFiles(args.topdir)
     if not pairdata:
         logger.error('No paired-end sequence data files found in %s', args.topdir)
@@ -233,7 +266,13 @@ def main():
     if not pairdata:
         logger.error('No paired-end sequence data files found in %s', args.topdir)
         return 1
+    logger.info('Found %d sets of files', len(pairdata))
 
+    trimmer = trimopts[args.trimmer]([pairdata[x].get('files') for x in pairdata])
+
+    trimmer.trim()
+
+    logger.info('Complete')
     return 0
 
 
