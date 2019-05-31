@@ -36,39 +36,33 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-class Trimmer():
-    def __init__(self, filepairs, adapters=None):
-        for f in list(sum(filepairs, ())):
+class Trimmer(object):
+    def __init__(self, filemeta, args, extra):
+        for f in list(sum([filemeta[x].get('files') for x in filemeta], [])):
             if not os.path.exists(f):
                 raise IOError('File %s does not exist' % r1)
-        self.filepairs = filepairs
-        if adapters:
+        self.filemeta = filemeta
+        self.adapters = None
+        if 'adapters' in extra:
+            adapters = extra[extra.index('adapters')+1]
             if not os.path.exists(adapters):
                 raise IOError('File %s does not exist' % adapters)
-        self.adapters = adapters
+            self.adapters = adapters
         self.command = None
         self.options = []
         self.sbatch_opts = []
 
-    def trim(self, options=[]):
-        logger.debug('Trimming files with options: %s', options)
-        if not options:
-            options = self.options
-        for r1, r2 in self.filepairs:
-            command_options = [self.command]
-            command_options.extend(options)
-            command_options.extend([r1, r2])
-            wrapcmd = ' '.join(command_options)
-            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
-            result = sbatch.run()
+    def trim(self, opts=[]):
+        ''' '''
         return None
                                     
 
 class TrimGalore(Trimmer):
-    def __init__(self, argc, **kwargs):
+    def __init__(self, filemeta, args, extra):
         ''' '''
-        super(TrimGalore, self).__init__(**kwargs)
-        if command in kwargs:
+        super(TrimGalore, self).__init__(filemeta, args, extra)
+        if 'command' in extra:
+            command = extra[extra.index('command')+1]
             if os.path.exists(command):
                 self.command = command
             else:
@@ -76,7 +70,35 @@ class TrimGalore(Trimmer):
         else:
             self.command = 'trim_galore'
         self.options = ['--paired', '--retain_unpaired', '--cores', '4', '--max_n', '40', '--gzip']
+        if args.outdir:
+            self.options.extend(['--outdir', args.outdir])
         self.sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
+
+    def trim(self, options=[]):
+        logger.debug('Trimming files with options: %s', options)
+        if not options:
+            options = self.options
+        for label in self.filemeta:
+            r1, r2 = self.filemeta[label].get('files')
+            command_options = [self.command]
+            command_options.extend(options)
+            command_options.extend([r1, r2])
+            wrapcmd = ' '.join(command_options)
+            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
+            result = sbatch.run()
+            if result:
+                outf1, outf2 = r1, r2
+                if '--basename' in self.options:
+                    basename = self.options[self.options.index('--basename')+1]
+                    basename = os.path.basename(basename)
+                    outf1 = basename + '_val_1.fq'
+                    outf2 = basename + '_val_2.fq'
+                if '--outdir' in self.options:
+                    outdir = self.options[self.options.index('--outdir')+1]
+                    outf1 = os.path.join(outdir, os.path.basename(outf1))
+                    outf2 = os.path.join(outdir, os.path.basename(outf2))
+                self.filemeta[label].update({'trimfiles': [outf1, outf2]})
+        return None
 
 
 class Trimomatic(Trimmer):
@@ -163,7 +185,7 @@ class Sbatch():
         self.options = options
         self.wrapcmd = wrapcmd
 
-    def run(options=[], wrapcmd=None):
+    def run(self, options=[], wrapcmd=None):
         command_options = [self.command]
         if not options:
             options = self.options
@@ -211,6 +233,7 @@ class Samtools():
         return None
 
 def findFiles(dname):
+    logger.info('Finding paired-end FASTQ sequence files in %s', dname)
     files = glob.glob(os.path.join(dname, '*_R*.fastq'))
     pairdata = {}
     for f in files:
@@ -225,12 +248,19 @@ def findFiles(dname):
 
 def main():
     logger.info('Starting')
+    schedulers = {
+        'local': 'Local execution',
+        'sge': 'Sun Grid Engine',
+        'slurm': 'SLURM'
+    }
     trimopts = {
         'trimgalore': TrimGalore,
         'trimmomatic': Trimomatic,
         'cutadapt': Cutadapt
     }
     parser = argparse.ArgumentParser()
+    parser.add_argument('--scheduler', type=str, choices=schedulers.keys(), default='local',
+                        help='Scheduler to use')
     parser.add_argument('--topdir', type=str, required=True,
                         help='Top-level directory containing paired-end sequence data input files')
     parser.add_argument('--refseq', type=str, required=True,
@@ -240,8 +270,9 @@ def main():
     parser.add_argument('--trimmer', type=str, choices=trimopts.keys(), default='trimmomatic',
                         help='Tool to use for sequence trimming')
 
-    logger.info('Proccessing arguments')
-    args = parser.parse_args()
+    logger.info('Processing arguments')
+    args, extra = parser.parse_known_args()
+    logger.info('Extra arguments: %s', extra)
 
     logger.info('Verifying arguments')
     if not os.path.exists(args.topdir):
@@ -256,21 +287,25 @@ def main():
         os.mkdir(args.outdir)
 
     logger.info('Finding input data')
-    pairdata = findFiles(args.topdir)
-    if not pairdata:
+    filemeta = findFiles(args.topdir)
+    if not filemeta:
         logger.error('No paired-end sequence data files found in %s', args.topdir)
         return 1
-    for s in pairdata:
-        if not pairdata[s].get('files'):
-            pairdata.pop(s)
-    if not pairdata:
+    for s in filemeta:
+        if not filemeta[s].get('files'):
+            filemeta.pop(s)
+    if not filemeta:
         logger.error('No paired-end sequence data files found in %s', args.topdir)
         return 1
-    logger.info('Found %d sets of files', len(pairdata))
+    logger.info('Found %d sets of files', len(filemeta))
 
-    trimmer = trimopts[args.trimmer]([pairdata[x].get('files') for x in pairdata])
+    logger.info('Instantiating trimmer...')
+    trimmer = trimopts[args.trimmer](filemeta, args, extra)
+    logger.info('Instantiated %s trimmer object', trimmer)
 
     trimmer.trim()
+
+    logger.info('Updated file meta:\n%s', filemeta)
 
     logger.info('Complete')
     return 0
