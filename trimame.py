@@ -43,8 +43,8 @@ class Trimmer(object):
                 raise IOError('File %s does not exist' % r1)
         self.filemeta = filemeta
         self.adapters = None
-        if 'adapters' in extra:
-            adapters = extra[extra.index('adapters')+1]
+        if '--adapters' in extra:
+            adapters = extra[extra.index('--adapters')+1]
             if not os.path.exists(adapters):
                 raise IOError('File %s does not exist' % adapters)
             self.adapters = adapters
@@ -61,8 +61,9 @@ class TrimGalore(Trimmer):
     def __init__(self, filemeta, args, extra):
         ''' '''
         super(TrimGalore, self).__init__(filemeta, args, extra)
-        if 'command' in extra:
-            command = extra[extra.index('command')+1]
+        if '--trimmer_path' in extra:
+            command = extra[extra.index('--trimmer_path')+1]
+            command = os.path.join(command, 'trim_galore')
             if os.path.exists(command):
                 self.command = command
             else:
@@ -75,9 +76,9 @@ class TrimGalore(Trimmer):
         self.sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
 
     def trim(self, options=[]):
-        logger.debug('Trimming files with options: %s', options)
         if not options:
             options = self.options
+        logger.debug('Trimming files with options: %s', options)
         for label in self.filemeta:
             r1, r2 = self.filemeta[label].get('files')
             command_options = [self.command]
@@ -102,17 +103,73 @@ class TrimGalore(Trimmer):
 
 
 class Trimomatic(Trimmer):
-    def __init__(self, args, **kwargs):
+    def __init__(self, filemeta, args, extra):
         ''' '''
+        super(Trimomatic, self).__init__(filemeta, args, extra)
+        command = 'java'
+        if '--java_path' in extra:
+            javapath = extra[extra.index('--java_path')+1]
+            command = os.path.join(javapath, command)
+            if os.path.exists(command):
+                self.command = command
+            else:
+                raise IOError('Command %s not found' % command)
+        else:
+            self.command = command
+        jarfile = 'trimmomatic.jar'
+        if '--trimmer_path' in extra:
+            jarpath = extra[extra.index('--trimmer_path')+1]
+            jarfile = os.path.join(jarpath, 'trimmomatic*.jar')
+            jarfile = glob.glob(jarfile)[0]  # find first match
+            if not jarfile:
+                raise IOError('No trimmomatic*.jar found in %s' % jarpath)
+        self.jarfile = jarfile
+        java_opts = ['-XX:ParallelGCThreads=8', '-Xms24576M', '-Xmx24576M', '-XX:NewSize=6144M',
+                     ' -XX:MaxNewSize=6144M']
+        if '--java_opts' in extra:
+            java_opts = extra[extra.index('--java_opts')+1].split()
+        self.java_opts = java_opts
+        self.options = ['PE', '-threads', '8', '-trimlog', '{input}_trimm.log', '{r1}', '{r2}',
+                        '{outdir}/{input}_trim_R1.fastq.gz', '{outdir}/{input}_unpaired_R1.fastq.gz',
+                        '{outdir}/{input}_trim_R2.fastq.gz', '{outdir}/{input}_unpaired_R2.fastq.gz',
+                        '#ILLUMINACLIP:{adapters}:2:30:10', 'LEADING:3', 'TRAILING:3', 'SLIDINGWINDOW:4:15',
+                        'MINLEN:36']
+        if args.outdir:
+            self.outdir = args.outdir
 
-    def trim(self, opts=[]):
+    def trim(self, options=[]):
         ''' '''
+        if not options:
+            options = self.options
+        logger.debug('Trimming files with options: %s', options)
+        for label in self.filemeta:
+            r1, r2 = self.filemeta[label].get('files')
+            argmap = {'adapters': self.adapters, 'input': label, 'r1': r1, 'r2': r2}
+            outdir = os.path.dirname(r1)
+            if self.outdir:
+                outdir = self.outdir
+            argmap.update({'outdir': outdir})
+            for opt in options[:]:
+                idx = options.index(opt)
+                opt = opt.format(**argmap)
+                options[idx] = opt
+            command_options = [self.command, self.jarfile]
+            command_options.extend(self.java_opts)
+            command_options.extend(options)
+            wrapcmd = ' '.join(command_options)
+            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
+            result = sbatch.run()
+            if result:
+                outf1 = options[7]
+                outf2 = options[9]
+                self.filemeta[label].update({'trimfiles': [outf1, outf2]})
         return None
 
 
 class Cutadapt(Trimmer):
-    def __init__(self, args, **kwargs):
+    def __init__(self, filemeta, args, extra):
         ''' '''
+        super(Cutadapt, self).__init__(filemeta, args, extra)
 
     def trim(self, opts=[]):
         ''' '''
@@ -120,32 +177,54 @@ class Cutadapt(Trimmer):
 
 
 class Aligner():
-    def __init__(self, inseqs, refseq, method, options=[]):
-        flist = [refseq]
-        flist.extend(inseqs)
+    def __init__(self, filemeta, args, extra):
+        if '--bwa_path' in extra:
+            command = extra[extra.index('--bwa_path')+1]
+            command = os.path.join(command, 'bwa')
+            if os.path.exists(command):
+                self.command = command
+            else:
+                raise IOError('Command %s not found' % command)
+        else:
+            self.command = 'bwa'
+        flist = [args.refseq]
+        flist.extend(list(sum([filemeta[x].get('trimfiles') for x in filemeta], [])))
         for f in flist:
             if not os.path.exists(f):
                 raise IOError('File %s does not exist' % f)
-        self.inseqs = inseqs
-        self.refseq = refseq
-        if method not in ['aln', 'mem']:
-            raise OSError('Method %s not allowed for alignment' % method)
+        self.filemeta = filemeta
+        self.refseq = args.refseq
+        method = 'aln'
+        if '--align_method':
+            if '--align_method' not in ['aln', 'mem']:
+                raise OSError('Method %s not allowed for alignment' % method)
+            method = extra[extra.index('--align_method')+1]
         self.method = method
-        if not options:
-            if method == 'aln':
-                options = ['-q', 15, '-t', NTHREADS, '-f', outfile]
-            elif method == 'mem':
-                options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
-                           '-t', NTHREADS, '-o', outfile]
-        self.options = options
+        self.options = []
+        if method == 'aln':
+            self.options = ['-q', 15, '-t', NTHREADS, '-f', outfile]
+        elif method == 'mem':
+            self.options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
+                            '-t', NTHREADS, '-o', outfile]
+        if args.outdir:
+            self.outdir = args.outdir
 
     def align(self, options=[]):
         if not options:
-            options = self.options
-        command_options = [self.command, self.method]
-        command_options.extend(options)
-        command_options.append(self.refseq)
-        command_options.extend(self.inseqs)
+            options = self.options[:]
+        for label in self.filemeta:
+            r1, r2 = self.filemeta[label].get('trimfiles')
+            outf1 = '%s_trim_R1.fastq.gz' % label
+            outf2 = '%s_trim_R2.fastq.gz' % label
+            if self.outdir:
+                outf1 = os.path.join(self.outdir, outf1)
+                outf2 = os.path.join(self.outdir, outf2)
+            command_options = [self.command, self.method]
+            if self.method == 'mem':
+                options[0] = options[0].format({'input': label})
+            command_options.extend(options)
+            command_options.append(self.refseq)
+            command_options.extend([r1, r2])
         wrapcmd = ' '.join(command_options)
         sbatch_opts = ['-N', 1, '-c', 16, '--mem=64g']
         batch = Sbatch(sbatch_opts, wrapcmd)
@@ -286,6 +365,8 @@ def main():
     else:
         os.mkdir(args.outdir)
 
+    ##
+    # Find file pairs
     logger.info('Finding input data')
     filemeta = findFiles(args.topdir)
     if not filemeta:
@@ -299,6 +380,8 @@ def main():
         return 1
     logger.info('Found %d sets of files', len(filemeta))
 
+    ##
+    # Trim each file in each pair
     logger.info('Instantiating trimmer...')
     trimmer = trimopts[args.trimmer](filemeta, args, extra)
     logger.info('Instantiated %s trimmer object', trimmer)
@@ -306,6 +389,17 @@ def main():
     trimmer.trim()
 
     logger.info('Updated file meta:\n%s', filemeta)
+
+    ##
+    # Map/align the files to the reference sequence
+    logger.info('Instantiating aligner...')
+    aligner = Aligner(filemeta, args, extra)
+    aligner.align()
+
+    ##
+    # Merge the file pairs    
+    #logger.info('Instantiating merger...')
+    #merger = Merger()
 
     logger.info('Complete')
     return 0
