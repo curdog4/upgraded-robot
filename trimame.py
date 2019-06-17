@@ -25,6 +25,7 @@ import glob
 import logging
 import argparse
 import subprocess
+import copy
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -149,19 +150,20 @@ class Trimomatic(Trimmer):
             if self.outdir:
                 outdir = self.outdir
             argmap.update({'outdir': outdir})
-            for opt in options[:]:
+            _opts = copy.deepcopy(options)
+            for opt in _opts[:]:
                 idx = options.index(opt)
                 opt = opt.format(**argmap)
-                options[idx] = opt
+                _opts[idx] = opt
             command_options = [self.command, self.jarfile]
             command_options.extend(self.java_opts)
-            command_options.extend(options)
+            command_options.extend(_opts)
             wrapcmd = ' '.join(command_options)
             sbatch = Sbatch(self.sbatch_opts, wrapcmd)
             result = sbatch.run()
             if result:
-                outf1 = options[7]
-                outf2 = options[9]
+                outf1 = _opts[7]
+                outf2 = _opts[9]
                 self.filemeta[label].update({'trimfiles': [outf1, outf2]})
         return None
 
@@ -195,17 +197,19 @@ class Aligner():
         self.filemeta = filemeta
         self.refseq = args.refseq
         method = 'aln'
-        if '--align_method':
-            if '--align_method' not in ['aln', 'mem']:
-                raise OSError('Method %s not allowed for alignment' % method)
+        if '--align_method' in extra:
             method = extra[extra.index('--align_method')+1]
+            if method not in ['aln', 'mem']:
+                raise OSError('Method %s not allowed for alignment' % method)
         self.method = method
         self.options = []
         if method == 'aln':
-            self.options = ['-q', 15, '-t', NTHREADS, '-f', outfile]
+            self.options = ['-q', '15', '-t', '16']
+            self.outflag = '-f'
         elif method == 'mem':
             self.options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
-                            '-t', NTHREADS, '-o', outfile]
+                            '-t', '16']
+            self.outflag = '-o'
         if args.outdir:
             self.outdir = args.outdir
 
@@ -214,22 +218,23 @@ class Aligner():
             options = self.options[:]
         for label in self.filemeta:
             r1, r2 = self.filemeta[label].get('trimfiles')
-            outf1 = '%s_trim_R1.fastq.gz' % label
-            outf2 = '%s_trim_R2.fastq.gz' % label
+            outfile = '%s.bam' % label
+            #outf2 = '%s_trim_R2.fastq.gz' % label
             if self.outdir:
-                outf1 = os.path.join(self.outdir, outf1)
-                outf2 = os.path.join(self.outdir, outf2)
+                outfile = os.path.join(self.outdir, outfile)
+                #outf2 = os.path.join(self.outdir, outf2)
             command_options = [self.command, self.method]
-            if self.method == 'mem':
-                options[0] = options[0].format({'input': label})
             command_options.extend(options)
+            if self.method == 'mem':
+                command_options[2] = command_options[2].format(input=label)
             command_options.append(self.refseq)
             command_options.extend([r1, r2])
-        wrapcmd = ' '.join(command_options)
-        sbatch_opts = ['-N', 1, '-c', 16, '--mem=64g']
-        batch = Sbatch(sbatch_opts, wrapcmd)
-        result = batch.run()
-        return result
+            command_options.extend([self.outflag, outfile])
+            wrapcmd = ' '.join(command_options)
+            sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
+            batch = Sbatch(sbatch_opts, wrapcmd)
+            result = batch.run()
+        return None
 
 
 class Merger():
