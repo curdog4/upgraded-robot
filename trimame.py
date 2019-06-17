@@ -26,6 +26,7 @@ import logging
 import argparse
 import subprocess
 import copy
+import shlex
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -39,6 +40,7 @@ logger.addHandler(handler)
 
 class Trimmer(object):
     def __init__(self, filemeta, args, extra):
+        self.args = args
         for f in list(sum([filemeta[x].get('files') for x in filemeta], [])):
             if not os.path.exists(f):
                 raise IOError('File %s does not exist' % r1)
@@ -86,8 +88,8 @@ class TrimGalore(Trimmer):
             command_options.extend(options)
             command_options.extend([r1, r2])
             wrapcmd = ' '.join(command_options)
-            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
-            result = sbatch.run()
+            job = Scheduler(self.args, self.sbatch_opts, wrapcmd)
+            result = job.run()
             if result:
                 outf1, outf2 = r1, r2
                 if '--basename' in self.options:
@@ -155,12 +157,12 @@ class Trimomatic(Trimmer):
                 idx = options.index(opt)
                 opt = opt.format(**argmap)
                 _opts[idx] = opt
-            command_options = [self.command, self.jarfile]
+            command_options = [self.command, '-jar', self.jarfile]
             command_options.extend(self.java_opts)
             command_options.extend(_opts)
             wrapcmd = ' '.join(command_options)
-            sbatch = Sbatch(self.sbatch_opts, wrapcmd)
-            result = sbatch.run()
+            job = Scheduler(self.args, self.sbatch_opts, wrapcmd)
+            result = job.run()
             if result:
                 outf1 = _opts[7]
                 outf2 = _opts[9]
@@ -180,6 +182,7 @@ class Cutadapt(Trimmer):
 
 class Aligner():
     def __init__(self, filemeta, args, extra):
+        self.args = args
         if '--bwa_path' in extra:
             command = extra[extra.index('--bwa_path')+1]
             command = os.path.join(command, 'bwa')
@@ -232,8 +235,8 @@ class Aligner():
             command_options.extend([self.outflag, outfile])
             wrapcmd = ' '.join(command_options)
             sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
-            batch = Sbatch(sbatch_opts, wrapcmd)
-            result = batch.run()
+            job = Scheduler(self.args, sbatch_opts, wrapcmd)
+            result = job.run()
         return None
 
 
@@ -260,6 +263,31 @@ class JavaJar():
         if not jaropts:
             jaropts = self.jaropts
 
+
+class Local():
+    def __init__(self, options=[], command=None):
+        if options:
+            self.options = options
+        if command:
+            self.command = command
+
+    def run(self, options=None, command=None):
+        if not command:
+            if not self.command:
+                raise OSError('No command provided')
+            command = self.command
+        command = shlex.split(command)
+        logger.info('Launching local command: %s', command)
+        return True
+        try:
+            result = subprocess.run([],
+                                    stderr=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    check=True)
+        except subprocess.CalledProcessError as err:
+            logger.error('An error occurred running the command: %s' , err)
+            return None
+        return result
 
 class Sbatch():
     def __init__(self, options=[], wrapcmd=None):
@@ -291,6 +319,24 @@ class Sbatch():
         return result
 
 
+class Scheduler():
+    def __init__(self, args, options=[], command=None):
+        if args.scheduler:
+            if args.scheduler == 'slurm':
+                self._scheduler = Sbatch(options, command)
+            elif args.scheduler == 'sge':
+                raise OSError('Scheduler type grid not yet implemented')
+            elif args.scheduler == 'local':
+                self._scheduler = Local(options, command)
+            else:
+                raise OSError('Scheduler type %s not understood' % args.scheduler)
+        else:
+            self._scheduler = Local
+
+    def run(self, options=None, command=None):
+        return self._scheduler.run(options, command)
+
+
 class Samtools():
     def __init__(self):
         ''' '''
@@ -315,6 +361,7 @@ class Samtools():
         opts.insert(0, command)
 
         return None
+
 
 def findFiles(dname):
     logger.info('Finding paired-end FASTQ sequence files in %s', dname)
