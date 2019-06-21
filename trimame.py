@@ -237,6 +237,8 @@ class Aligner():
             sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
             job = Scheduler(self.args, sbatch_opts, wrapcmd)
             result = job.run()
+            if result:
+                self.filemeta[label].update({'alignfiles': [outfile]})
         return None
 
 
@@ -338,7 +340,16 @@ class Scheduler():
 
 
 class Samtools():
-    def __init__(self):
+    def __init__(self, args, extra):
+        command = 'samtools'
+        if extra.get('--samtools_path'):
+            samtools_path = extra[extra.index('--samtools_path')+1]
+            if os.path.is_file(samtools_path):
+                samtools_path = os.path.dirname(samtools_path)
+            if not os.path.exists(os.path.join(samtools_path, command):
+                raise OSError('Samtools not found in provided path')
+            command = os.path.join(samtools_path, command)
+        self.command = command
         ''' '''
 
     def flagstat(self, opts=[]):
