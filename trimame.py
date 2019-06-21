@@ -366,6 +366,11 @@ class Samtools():
 
     def view(self, opts=[]):
         ''' '''
+        scheduler = Scheduler(args)
+        cmd_list = [self.command, 'view']
+        cmd_list.extend(opts)
+        cmd_str = ' '.join(cmd_list)
+        result = scheduler.run(command=cmd_str)
         return None
 
     def run(self, command, opts=[]):
