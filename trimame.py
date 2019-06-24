@@ -37,6 +37,8 @@ formatter = logging.Formatter('%(asctime)s %(levelname)s: %(filename)s[%(lineno)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
+NUM_THREADS = 1
+
 
 class Trimmer(object):
     def __init__(self, filemeta, args, extra):
@@ -73,10 +75,10 @@ class TrimGalore(Trimmer):
                 raise IOError('Command %s not found' % command)
         else:
             self.command = 'trim_galore'
-        self.options = ['--paired', '--retain_unpaired', '--cores', '4', '--max_n', '40', '--gzip']
+        self.options = ['--paired', '--retain_unpaired', '--cores', '%s' % NUM_THREADS, '--max_n', '40', '--gzip']
         if args.outdir:
             self.options.extend(['--outdir', args.outdir])
-        self.sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
+        self.sbatch_opts = ['-N', '1', '-c', '%s' % NUM_THREADS, '--mem=64g']
 
     def trim(self, options=[]):
         if not options:
@@ -127,12 +129,12 @@ class Trimomatic(Trimmer):
             if not jarfile:
                 raise IOError('No trimmomatic*.jar found in %s' % jarpath)
         self.jarfile = jarfile
-        java_opts = ['-XX:ParallelGCThreads=8', '-Xms24576M', '-Xmx24576M', '-XX:NewSize=6144M',
+        java_opts = ['-XX:ParallelGCThreads=%s' % NUM_THREADS, '-Xms24576M', '-Xmx24576M', '-XX:NewSize=6144M',
                      ' -XX:MaxNewSize=6144M']
         if '--java_opts' in extra:
             java_opts = extra[extra.index('--java_opts')+1].split()
         self.java_opts = java_opts
-        self.options = ['PE', '-threads', '8', '-trimlog', '{input}_trimm.log', '{r1}', '{r2}',
+        self.options = ['PE', '-threads', '%s' % NUM_THREADS, '-trimlog', '{input}_trimm.log', '{r1}', '{r2}',
                         '{outdir}/{input}_trim_R1.fastq.gz', '{outdir}/{input}_unpaired_R1.fastq.gz',
                         '{outdir}/{input}_trim_R2.fastq.gz', '{outdir}/{input}_unpaired_R2.fastq.gz',
                         '#ILLUMINACLIP:{adapters}:2:30:10', 'LEADING:3', 'TRAILING:3', 'SLIDINGWINDOW:4:15',
@@ -207,11 +209,11 @@ class Aligner():
         self.method = method
         self.options = []
         if method == 'aln':
-            self.options = ['-q', '15', '-t', '16']
+            self.options = ['-q', '15', '-t', '%s' % NUM_THREADS]
             self.outflag = '-f'
         elif method == 'mem':
             self.options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
-                            '-t', '16']
+                            '-t', '%s' % NUM_THREADS]
             self.outflag = '-o'
         if args.outdir:
             self.outdir = args.outdir
@@ -240,30 +242,6 @@ class Aligner():
             if result:
                 self.filemeta[label].update({'alignfiles': [outfile]})
         return None
-
-
-class Merger():
-    def __init__(self):
-        ''' '''
-
-    def merge(self, opts={}):
-        ''' '''
-        return None
-
-
-class JavaJar():
-    def __init__(self, jarfile, javaopts=[], jaropts=[]):
-        if not os.path.exists(jarfile):
-            raise IOError('JAR file %s does not exist' % jarfile)
-        self.jarfile = jarfile
-        self.javaopts = javaopts
-        self.jaropts = jaropts
-
-    def execute(self, javaopts=[], jaropts=[]):
-        if not javaopts:
-            javaopts = self.javaopts
-        if not jaropts:
-            jaropts = self.jaropts
 
 
 class Local():
@@ -295,7 +273,7 @@ class Sbatch():
     def __init__(self, options=[], wrapcmd=None):
         self.command = 'sbatch'
         if not options:
-            options = ['-N', 1, '-c', 16, '--mem=64g']
+            options = ['-N', 1, '-c', '%s' % NUM_THREADS, '--mem=64g']
         self.options = options
         self.wrapcmd = wrapcmd
 
@@ -413,6 +391,8 @@ def main():
         'cutadapt': Cutadapt
     }
     parser = argparse.ArgumentParser()
+    parser.add_argument('--num_theads', type=int, default=4,
+                        help='Number of CPU threads/cores to use')
     parser.add_argument('--scheduler', type=str, choices=schedulers.keys(), default='local',
                         help='Scheduler to use')
     parser.add_argument('--topdir', type=str, required=True,
@@ -427,6 +407,10 @@ def main():
     logger.info('Processing arguments')
     args, extra = parser.parse_known_args()
     logger.info('Extra arguments: %s', extra)
+
+    global NUM_THREADS
+    if args.num_threads:
+        NUM_THREADS = args.num_threads
 
     logger.info('Verifying arguments')
     if not os.path.exists(args.topdir):
@@ -526,11 +510,35 @@ def main():
         except OSError as err:
             logger.info('Error running samtools flagstat: %s', err)
             sys.exit(1)
+        filemeta[label].update({'sortindex': [sortfile]})
 
     ##
-    # Merge the file pairs    
-    #logger.info('Instantiating merger...')
-    #merger = Merger()
+    # Use picard tools to MarkDuplicates
+    java_opts = ['-XX:ParallelGCThreads=%s' % NUM_THREADS, '-XX:-UseGCOverheadLimit', '-Xms24576',
+                 '-Xmx24576', '-XX:NewSize=6144M', '-XX:MaxNewSize=6144M']
+    for label in filemeta:
+        input_filename = filemeta[label]['sortindex'][0]
+        output_filename = label + '_dedup.bam'
+        matrix_filename = label + '_dedup.matrics'
+        if args.outdir:
+            output_filename = os.path.join(args.outdir, output_filename)
+            matrix_filename = os.path.join(args.outdir, matrix_filename)
+        picard_opts = ['I=%s' % input_filename, 'O=%s' % output_filename, 'M=%s' % matrix_filename, 'AS=true']
+
+    ##
+    # Use sametools index on resultant BAM
+
+
+    ##
+    # Use GenomeToolkit HaplotypeCaller with genome reference
+    for label in filemeta:
+        input_filename = filemeta[label][['dedup'][0]
+        output_filename = label + '_snps.indels.vcf'
+        if args.outdir:
+            output_filename = os.path.join(args.outdir, output_filename)
+            gtk_opts = ['--native-pair-hmm-threads', '%s' % NUM_THREADS, '-R', args.refseq,
+                        '-stand_call_conf', '30', '-stand_emit_conf', '10', '-I', input_filename,
+                        '-o', output_filename]
 
     logger.info('Complete')
     return 0
