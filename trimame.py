@@ -353,30 +353,37 @@ class Samtools():
         ''' '''
 
     def flagstat(self, opts=[]):
-        ''' '''
-        return None
+        '''Run samtools flagstat with provided options
+        '''
+        command = 'flagstat'
+        return self.run(command, opts)
 
     def index(self, opts=[]):
-        ''' '''
-        return None
+        '''Run samtools index with provided options
+        '''
+        command = 'index'
+        return self.run(command, opts)
 
     def sort(self, opts=[]):
-        ''' '''
-        return None
+        '''Run samtools sort with provided options
+        '''
+        command = 'sort'
+        return self.run(command, opts)
 
     def view(self, opts=[]):
-        ''' '''
-        scheduler = Scheduler(args)
-        cmd_list = [self.command, 'view']
-        cmd_list.extend(opts)
-        cmd_str = ' '.join(cmd_list)
-        result = scheduler.run(command=cmd_str)
-        return None
+        '''Run samtools view with provided options
+        '''
+        command = 'view'
+        return self.run(command, opts)
 
     def run(self, command, opts=[]):
-        opts.insert(0, command)
-
-        return None
+        scheduler = Scheduler(args)
+        cmd_list = [self.command, command]
+        cmd_list.extend(opts)
+        cmd_str = ' '.join(cmd_list)
+        if result.return_code != 0:
+            raise OSError(result.stderr)
+        return result.stdout
 
 
 def findFiles(dname):
@@ -463,6 +470,62 @@ def main():
     logger.info('Instantiating aligner...')
     aligner = Aligner(filemeta, args, extra)
     aligner.align()
+
+    for label in filemeta:
+        ##
+        # Convert to BAM
+        tmpfd, tmpfile = tempfile.mkstemp()
+        command_opts = ['-b', '-S', '-o', tmpfile, filemeta[label]['alignfiles'][0]]
+        logger.info('Converting file %s to BAM using temp file %s', filemeta[label]['alignfiles'][0], tmpfile)
+        samtools = Samtools(args)
+        try:
+            ret = samtools.view(command_opts)
+        except OSError as err:
+            logger.error('Error running samtools view: %s', err)
+            sys.exit(1)
+        if not os.path.getsize(tempfile) > 0:
+            logger.error('Error running samtools view: zero-size file generated')
+            sys.exit(1)
+        ##
+        # Sort the BAM file
+        sortfd, sortfile = tempfile.mkstemp()
+        command_opts = ['-@', NUM_THREADS, '-o', sortfile, tmpfile]
+        logger.info('Sorting the BAM file %s into file %s', tmpfile, sortfile)
+        try:
+            ret = samtools.sort(command_opts)
+        except OSError as err:
+            logger.error('Error running samtools sort: %s', err)
+            sys.exit(1)
+        if not os.path.getsize(sortfile) > 0:
+            logger.error('Error running samtools sort: zero-size file generated')
+            sys.exit(1)
+        tmpfd = None
+        sortfd = None
+        os.unlink(tmpfile)
+        outfile = label + '.bam'
+        if args.outdir:
+            outfile = os.path.join(args.outdir, outfile)
+        os.rename(sortfile, outfile)
+        sortfile = outfile
+        ##
+        # Run samtools index on sorted BAM file
+        command_opts = [sortfile]
+        logger.info('Indexing sorted BAM file %s', sortfile)
+        try:
+            ret = samtools.index(command_opts)
+        except OSError as err:
+            logger.error('Error running samtools index: %s', err)
+            sys.exit(1)
+        ##
+        # Run samtools flagstat on the sorted BAM file
+        outfile = label + '_mapping.stat'
+        command_opts = [sortfile, outfile]
+        logger.info('Generating mapping stats for sorted, indexed BAM file %s', sortfile)
+        try:
+            ret = samtools.flagstat(command_opts)
+        except OSError as err:
+            logger.info('Error running samtools flagstat: %s', err)
+            sys.exit(1)
 
     ##
     # Merge the file pairs    
