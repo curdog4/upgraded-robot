@@ -1,0 +1,29 @@
+{
+  "disable_existing_loggers": true,
+  "filters": {},
+  "formatters": {
+    "default": {
+        "format": "%(asctime)s %(levelname)s: %(filename)s[%(lineno)d](%(funcName)s) - %(message)s",
+        "datefmt": "%F %T"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "formatter": "default",
+      "level": "NOTSET",
+      "stream": "ext://sys.stderr"
+    }
+  },
+  "incremental": false,
+  "loggers": {
+    "SplitChimeras": {
+        "filters": [],
+        "handlers": ["console"],
+        "level": "WARNING",
+        "propagate": false
+    }
+  },
+  "root": {},
+  "version": 1
+}
