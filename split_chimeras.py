@@ -6,7 +6,9 @@ Given input GFF, genome FASTA, and transcriptome FASTA files
   transcriptome FASTA files which split the chimeric genes into separate
   features
 
-TBD: Tell us how!!
+Substantially influenced by / borrow from:
+* Defusion: https://github.com/wjidea/defusion
+* Optimize Assembler: https://bitbucket.org/yangya/optimize_assembler/
 '''
 
 import os
@@ -16,17 +18,20 @@ import logging.config
 import argparse
 import json
 import glob
-from pprint import pformat
+import math
 
+##
+# Top-level third-party / external dependencies
 import gffutils
 from Bio import SeqIO
 from Bio.Blast.Applications import NcbiblastxCommandline
 
 
+COVERAGE_THRESHOLD = 0.60
+IDENTITY_THRESHOLD = 0.40
+PADDING_FACTOR=0.25
 #UNIPROT_DBFILE = '/data/gpfs/home/dcurdie/scratch/UniProtKB/uniprot_sprot.20190627-151946.fasta'
 UNIPROT_DBFILE = '/data/gpfs/home/dcurdie/scratch/VectorBase/mosquito.fa'
-IDENTITY_THRESHOLD = 0.40
-COVERAGE_THRESHOLD = 0.60
 
 logConfFile = 'logging.json'
 with open(logConfFile, 'r') as fd:
@@ -36,10 +41,12 @@ logging.config.dictConfig(logConfData)
 logger = logging.getLogger('SplitChimeras')
 
 
-def adjust_coords(coords, mrna, gene, exons):
+def adjust_coords(coords, mrna, gene, exons, pad_factor):
     pos_ptr = mrna.start
     start_pos = stop_pos = None
     feature_len = coords[1] - coords[0]
+    padding = int(math.ceil(pad_factor * float(feature_len)))
+    logger.debug('Feature length is %d, padding is %d', feature_len, padding)
     offset = 0
     exons = sorted(exons)
     logger.debug('Proceeding through %s mRNA starting from %d', mrna.id, pos_ptr)
@@ -63,13 +70,16 @@ def adjust_coords(coords, mrna, gene, exons):
                 offset += 1
             #logger.debug('Not within exon %s at position %d', exon, pos_ptr)
         if start_pos and stop_pos:
+            start_pos -= padding
+            stop_pos += padding
             break
         pos_ptr += 1
     return start_pos, stop_pos
 
 def blast_sequence_files(args, suffix='fa'):
     outdir = os.path.join(args.outdir, 'seqs')
-    logger.info('Blast files in %s against UniProt/SwissProt DB', outdir)
+    logger.info('Blast files in %s against reference protein DB', outdir)
+    logger.debug('Reference protein db=%s', args.refdb)
     inputFastaFiles = glob.glob(os.path.join(outdir, '*.%s' % suffix))
     logger.debug('Processing %d sequence files', len(inputFastaFiles))
     blastfmt = '"6 qseqid qlen sseqid slen qframe pident nident length mismatch gapopen qstart qend sstart send evalue bitscore"'
@@ -78,7 +88,7 @@ def blast_sequence_files(args, suffix='fa'):
         label = os.path.splitext(os.path.basename(inputFastaFile))[0]
         outfname = os.path.join(os.path.dirname(inputFastaFile), '%s_blastx.tbl' % label)
         blastCmd = NcbiblastxCommandline(cmd='blastx', query=inputFastaFile,
-                                         db=UNIPROT_DBFILE, task='blastx',
+                                         db=args.refdb, task='blastx',
                                          evalue='1e-30', outfmt=blastfmt,
                                          max_hsps='10', num_threads='4')  # maybe also/instead max_target_seqs='100'
 
@@ -108,14 +118,14 @@ def blast_sequence_files(args, suffix='fa'):
             matchkey = '%s\0%s' % (featurename, subject_id)
             ##
             # filtering criteria: percent identity, coverage
-            if float(fields[5]) / 100.0 < IDENTITY_THRESHOLD:
+            if float(fields[5]) / 100.0 < args.identity:
                 logger.debug('skip record with low identity: %s < %s',
-                             float(fields[5]) / 100.0, IDENTITY_THRESHOLD)
+                             float(fields[5]) / 100.0, args.identity)
                 continue
             cov = float(fields[7]) / float(fields[1])
-            if cov < COVERAGE_THRESHOLD:
+            if cov < args.coverage:
                 logger.debug('skip record with low coverage: %s < %s',
-                             cov, COVERAGE_THRESHOLD)
+                             cov, args.coverage)
             blastmap.setdefault(featurename, {})
             blastmap[featurename].setdefault(matchkey, [])
             blastmap[featurename][matchkey].append(fields)
@@ -149,7 +159,7 @@ def list_chimeric_features(blastmap):
     chimeric_features = list(set(chimeric_features))
     return chimeric_features
 
-def map_feature_coords(features, blastmap, db):
+def map_feature_coords(features, blastmap, db, pad_factor):
     coords = {}
     for label in features:
         mrna = db[label]
@@ -204,7 +214,7 @@ def map_feature_coords(features, blastmap, db):
         for idx in range(len(coords[feature_id]['coords'])):
             start, stop = coords[feature_id]['coords'][idx]
             logger.debug('Adjust coordinates %s to genome', (start, stop))
-            start, stop = adjust_coords((start, stop), mrna, gene, exons)
+            start, stop = adjust_coords((start, stop), mrna, gene, exons, pad_factor)
             logger.debug('Genome adjusted coordinates are %s', (start, stop))
             coords[feature_id]['coords'][idx] = (start, stop)
             
@@ -223,10 +233,20 @@ def main():
                              help='Input GFF file')
     input_group.add_argument('--genome', required=True,
                              help='Input genome FASTA file')
+    input_group.add_argument('--refdb', default=UNIPROT_DBFILE,
+                             help='Reference protein FASTA DB file for BLAST')
     input_group.add_argument('--transcriptome', required=True,
                              help='Input transcriptome FASTA file')
+    blast_group = parser.add_argument_group(title='BLAST filtering',
+                                            description='Options controlling BLAST result filtering')
+    blast_group.add_argument('--identity', default=IDENTITY_THRESHOLD, type=float,
+                             help='Minimum identity threshold for BLAST HSP')
+    blast_group.add_argument('--coverage', default=COVERAGE_THRESHOLD, type=float,
+                             help='Minimum coverage threshold for BLAST HSP')
     parser.add_argument('--outdir', default=os.getcwd(),
                         help='Output directory')
+    parser.add_argument('--padding', default=PADDING_FACTOR, type=float,
+                        help='Fraction of the alignment length to use as padding')
     args, extra = parser.parse_known_args()
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -250,12 +270,12 @@ def main():
     separate_transcripts_for_blast(args, suffix='fasta')
     logger.info('BLASTing each sequence file against UniProt/SwissProt DB')
     blastmap = blast_sequence_files(args, suffix='fasta')
-    logger.debug('Return BLAST map:\n%s', pformat(blastmap))
+    logger.debug('Return BLAST map:\n%s', json.dumps(blastmap))
     chimeric_features = list_chimeric_features(blastmap)
     logger.info('Got %d likely chimeric features', len(chimeric_features))
     logger.debug('Likely chimeric features: %s', chimeric_features)
     logger.info('Mapping likely chimeric features to genome')
-    coords = map_feature_coords(chimeric_features, blastmap, db)
+    coords = map_feature_coords(chimeric_features, blastmap, db, args.padding)
 
     logger.info('Loading genome FASTA data')
     genomeSeqs = SeqIO.index(args.genome, 'fasta')
