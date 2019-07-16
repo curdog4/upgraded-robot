@@ -20,8 +20,158 @@ import json
 import glob
 import math
 
-##
-# Top-level third-party / external dependencies
+'''
+Top-level third-party / external dependencies: gffutils, biopython, python2.7
+Package dependency tree:
+- gffutils=0.9=py_1 (channel:bioconda)
+  - argcomplete=1.9.5=py27_0
+    - python >=2.7,<2.8.0a0
+  - argh=0.26.1=py27_0
+    - python 2.7*
+  - pyfaidx=0.5.5.2=py_1 (channel:bioconda)
+    - python
+    - six=1.12.0=py27_0
+      - python >=2.7,<2.8.0a0
+  - python
+  - simplejson=3.8.1=py27_0 (channel:bioconda)
+    - python 2.7*
+  - six=1.12.0=py27_0
+    - python >=2.7,<2.8.0a0
+- biopython=1.70=np112py27_1 (Bio) (channel:bioconda)
+  - mmtf-python=1.0.2=py27_0 (channel:bioconda)
+    - msgpack-python=0.6.1=py27hfd86e86_1
+      - libgcc-ng=8.2.0=hdf63c60_1g
+        - _libgcc_mutex * main
+      - libstdcxx-ng=8.2.0=hdf63c60_1
+      - python >=2.7,<2.8.0a0
+    - python 2.7*
+  - numpy=1.12.1=py27h9378851_1
+    - libgcc-ng=8.2.0=hdf63c60_1
+      - _libgcc_mutex * main
+    - libgfortran-ng=7.3.0=hdf63c60_0
+    - python >=2.7,<2.8.0a0
+    - mkl=2018.0.3=1
+      - intel-openmp=2019.1=144
+    - blas=1.0=mkl
+  - python=2.7.15=h9bab390_6
+    - libffi >=3.2.1,<4.0a0
+    - libgcc-ng=8.2.0=hdf63c60_1
+      - _libgcc_mutex * main
+    - libstdcxx-ng=8.2.0=hdf63c60_1
+    - ncurses=6.1=he6710b0_1
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+      - libstdcxx-ng=8.2.0=hdf63c60_1
+    - openssl=1.1.1c=h7b6447c_1
+      - ca-certificates=2019.5.15=0
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+    - readline=7.0=h7b6447c_5
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+      - ncurses=6.1=he6710b0_1
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - libstdcxx-ng=8.2.0=hdf63c60_1
+    - sqlite=3.26.0=h7b6447c_0
+      - libedit=3.1.20181209=hc058e9b_0
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - ncurses=6.1=he6710b0_1
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+          - libstdcxx-ng=8.2.0=hdf63c60_1
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+    - tk=8.6.8=hbc83047_0
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+      - zlib=1.2.11=h7b6447c_3
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+    - zlib=1.2.11=h7b6447c_3
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+    - pip=19.0.3=py27_0
+      - python >=2.7,<2.8.0a0
+      - setuptools=40.8.0=py27_0
+        - certifi=2019.6.16=py27_0
+          - python >=2.7,<2.8.0a0
+        - python >=2.7,<2.8.0a0
+      - wheel=0.33.1=py27_0
+        - python >=2.7,<2.8.0a0
+        - setuptools=40.8.0=py27_0
+          - certifi=2019.6.16=py27_0
+            - python >=2.7,<2.8.0a0
+          - python >=2.7,<2.8.0a0
+  - reportlab=3.5.19=py27he686d34_0
+    - freetype=2.9.1=h8a8886c_1
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+      - libpng=1.6.37=hbc83047_0
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - zlib=1.2.11=h7b6447c_3
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+      - zlib=1.2.11=h7b6447c_3
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+    - libgcc-ng=8.2.0=hdf63c60_1
+      - _libgcc_mutex * main
+    - pillow=6.0.0=py27h34e0f95_0
+      - freetype=2.9.1=h8a8886c_1
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - libpng=1.6.37=hbc83047_0
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+          - zlib=1.2.11=h7b6447c_3
+            - libgcc-ng=8.2.0=hdf63c60_1
+              - _libgcc_mutex * main
+      - jpeg=9b=h024ee3a_2
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+      - libgcc-ng=8.2.0=hdf63c60_1
+        - _libgcc_mutex * main
+      - libtiff=4.0.10=h2733197_2
+        - jpeg=9b=h024ee3a_2
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - libstdcxx-ng=8.2.0=hdf63c60_1
+        - xz=5.2.4=h14c3975_4
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+        - zlib=1.2.11=h7b6447c_3
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+        - zstd=1.3.7=h0b5b093_0
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+          - libstdcxx-ng=8.2.0=hdf63c60_1
+          - xz=5.2.4=h14c3975_4
+            - libgcc-ng=8.2.0=hdf63c60_1
+              - _libgcc_mutex * main
+          - zlib=1.2.11=h7b6447c_3
+            - libgcc-ng=8.2.0=hdf63c60_1
+              - _libgcc_mutex * main
+      - olefile=0.46=py27_0
+        - python >=2.7,<2.8.0a0
+      - python >=2.7,<2.8.0a0
+      - tk=8.6.8=hbc83047_0
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+        - zlib=1.2.11=h7b6447c_3
+          - libgcc-ng=8.2.0=hdf63c60_1
+            - _libgcc_mutex * main
+      - zlib=1.2.11=h7b6447c_3
+        - libgcc-ng=8.2.0=hdf63c60_1
+          - _libgcc_mutex * main
+    - python >=2.7,<2.8.0a0
+
+'''
 import gffutils
 from Bio import SeqIO
 from Bio.Blast.Applications import NcbiblastxCommandline
