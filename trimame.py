@@ -64,7 +64,8 @@ class Trimmer(object):
 
 class TrimGalore(Trimmer):
     def __init__(self, filemeta, args, extra):
-        ''' '''
+        '''NOTE: TrimGalore depends on cutadpt (python package)
+        '''
         super(TrimGalore, self).__init__(filemeta, args, extra)
         if '--trimmer_path' in extra:
             command = extra[extra.index('--trimmer_path')+1]
@@ -77,7 +78,7 @@ class TrimGalore(Trimmer):
             self.command = 'trim_galore'
         self.options = ['--paired', '--retain_unpaired', '--cores', '%s' % NUM_THREADS, '--max_n', '40', '--gzip']
         if args.outdir:
-            self.options.extend(['--outdir', args.outdir])
+            self.options.extend(['--output_dir', args.outdir])
         self.sbatch_opts = ['-N', '1', '-c', '%s' % NUM_THREADS, '--mem=64g']
 
     def trim(self, options=[]):
@@ -134,10 +135,10 @@ class Trimomatic(Trimmer):
         if '--java_opts' in extra:
             java_opts = extra[extra.index('--java_opts')+1].split()
         self.java_opts = java_opts
-        self.options = ['PE', '-threads', '%s' % NUM_THREADS, '-trimlog', '{input}_trimm.log', '{r1}', '{r2}',
+        self.options = ['PE', '-threads', '%s' % NUM_THREADS, '-trimlog', '{outdir}/{input}_trimm.log', '{r1}', '{r2}',
                         '{outdir}/{input}_trim_R1.fastq.gz', '{outdir}/{input}_unpaired_R1.fastq.gz',
                         '{outdir}/{input}_trim_R2.fastq.gz', '{outdir}/{input}_unpaired_R2.fastq.gz',
-                        '#ILLUMINACLIP:{adapters}:2:30:10', 'LEADING:3', 'TRAILING:3', 'SLIDINGWINDOW:4:15',
+                        'ILLUMINACLIP:{adapters}:2:30:10', 'LEADING:3', 'TRAILING:3', 'SLIDINGWINDOW:4:15',
                         'MINLEN:36']
         if args.outdir:
             self.outdir = args.outdir
@@ -159,8 +160,9 @@ class Trimomatic(Trimmer):
                 idx = options.index(opt)
                 opt = opt.format(**argmap)
                 _opts[idx] = opt
-            command_options = [self.command, '-jar', self.jarfile]
+            command_options = [self.command]
             command_options.extend(self.java_opts)
+            command_options.extend(['-jar', self.jarfile])
             command_options.extend(_opts)
             wrapcmd = ' '.join(command_options)
             job = Scheduler(self.args, self.sbatch_opts, wrapcmd)
@@ -258,14 +260,15 @@ class Local():
             command = self.command
         command = shlex.split(command)
         logger.info('Launching local command: %s', command)
-        return True
+        #return True
         try:
-            result = subprocess.run([],
-                                    stderr=subprocess.PIPE,
-                                    stdout=subprocess.PIPE,
+            result = subprocess.run(command,
+                                    #stderr=subprocess.PIPE,
+                                    #stdout=subprocess.PIPE,
+                                    capture_output=True,
                                     check=True)
         except subprocess.CalledProcessError as err:
-            logger.error('An error occurred running the command: %s' , err)
+            logger.error('An error occurred running the command: %s', err)
             return None
         return result
 
@@ -324,7 +327,7 @@ class Samtools():
             samtools_path = extra[extra.index('--samtools_path')+1]
             if os.path.is_file(samtools_path):
                 samtools_path = os.path.dirname(samtools_path)
-            if not os.path.exists(os.path.join(samtools_path, command):
+            if not os.path.exists(os.path.join(samtools_path, command)):
                 raise OSError('Samtools not found in provided path')
             command = os.path.join(samtools_path, command)
         self.command = command
@@ -366,15 +369,15 @@ class Samtools():
 
 def findFiles(dname):
     logger.info('Finding paired-end FASTQ sequence files in %s', dname)
-    files = glob.glob(os.path.join(dname, '*_R*.fastq'))
+    files = glob.glob(os.path.join(dname, '*_R[12].fastq'))
+    files.extend(glob.glob(os.path.join(dname, '*_R[12].fastq.gz')))
     pairdata = {}
     for f in files:
         base, _ = os.path.basename(f).split('_R')
-        if pairdata.get(base):
-            pairdata[base]['files'].append(f)
-            pairdata[base]['files'].sort()
-        else:
-            pairdata.update({base: {'files': [f]}})
+        pairdata.setdefault(base, {})
+        pairdata[base].setdefault('files', [])
+        pairdata[base]['files'].append(f)
+        pairdata[base]['files'].sort()
     return pairdata
 
 
@@ -391,8 +394,6 @@ def main():
         'cutadapt': Cutadapt
     }
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_theads', type=int, default=4,
-                        help='Number of CPU threads/cores to use')
     parser.add_argument('--scheduler', type=str, choices=schedulers.keys(), default='local',
                         help='Scheduler to use')
     parser.add_argument('--topdir', type=str, required=True,
@@ -403,14 +404,17 @@ def main():
                         help='Directory to write output files into')
     parser.add_argument('--trimmer', type=str, choices=trimopts.keys(), default='trimmomatic',
                         help='Tool to use for sequence trimming')
+    parser.add_argument('--threads', type=int, default=4,
+                        help='Number of CPU threads/cores to use')
 
     logger.info('Processing arguments')
     args, extra = parser.parse_known_args()
+    logger.info('Args: %s', args)
     logger.info('Extra arguments: %s', extra)
 
     global NUM_THREADS
-    if args.num_threads:
-        NUM_THREADS = args.num_threads
+    if args.threads:
+        NUM_THREADS = args.threads
 
     logger.info('Verifying arguments')
     if not os.path.exists(args.topdir):
@@ -448,6 +452,8 @@ def main():
     trimmer.trim()
 
     logger.info('Updated file meta:\n%s', filemeta)
+
+    return 0
 
     ##
     # Map/align the files to the reference sequence
@@ -532,7 +538,7 @@ def main():
     ##
     # Use GenomeToolkit HaplotypeCaller with genome reference
     for label in filemeta:
-        input_filename = filemeta[label][['dedup'][0]
+        input_filename = filemeta[label]['dedup'][0]
         output_filename = label + '_snps.indels.vcf'
         if args.outdir:
             output_filename = os.path.join(args.outdir, output_filename)
