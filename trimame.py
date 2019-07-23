@@ -27,6 +27,8 @@ import argparse
 import subprocess
 import copy
 import shlex
+import shutil
+import tempfile
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -214,8 +216,8 @@ class Aligner():
             self.options = ['-q', '15', '-t', '%s' % NUM_THREADS]
             self.outflag = '-f'
         elif method == 'mem':
-            self.options = ['@RG\tID:{input}\tPL:ILLUMINA\tLB:{input}\tSM:{input}',
-                            '-t', '%s' % NUM_THREADS]
+            self.options = ['-t', '%s' % NUM_THREADS, '-R',
+                            '@RG\\tID:{input}\\tPL:ILLUMINA\\tLB:{input}\\tSM:{input}']
             self.outflag = '-o'
         if args.outdir:
             self.outdir = args.outdir
@@ -233,18 +235,46 @@ class Aligner():
             command_options = [self.command, self.method]
             command_options.extend(options)
             if self.method == 'mem':
-                command_options[2] = command_options[2].format(input=label)
+                command_options[-1] = """'%s'""" % command_options[-1].format(input=label)
             command_options.append(self.refseq)
             command_options.extend([r1, r2])
             command_options.extend([self.outflag, outfile])
-            wrapcmd = ' '.join(command_options)
+            command_options = ' '.join(command_options)
             sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
-            job = Scheduler(self.args, sbatch_opts, wrapcmd)
+            job = Scheduler(self.args, sbatch_opts, command_options)
             result = job.run()
             if result:
                 self.filemeta[label].update({'alignfiles': [outfile]})
         return None
 
+
+class JavaJar():
+    def __init__(self, jarfile, args, extra, java_opts=[], jar_opts=[]):
+        self.args = args
+        self.java_opts = java_opts
+        self.jar_opts = jar_opts
+        self.jarfile = jarfile
+        self.command = 'java'
+        if '--java_path' in extra:
+            java_path = extra[extra.index('--java_path')+1]
+            if not os.path.isdir(java_path):
+                java_path = os.path.dirname(java_path)
+            self.command = os.path.join(java_path, self.command)
+            if not os.path.exists(self.command):
+                raise OSError('Java not found at %s', self.command)
+
+    def run(self, java_opts=[], jar_opts=[]):
+        if not java_opts:
+            java_opts = self.java_opts
+        if not jar_opts:
+            jar_opts = self.jar_opts
+        cmd_list = [self.command]
+        cmd_list.extend(java_opts)
+        cmd_list.extend(['-jar', self.jarfile])
+        cmd_list.extend(jar_opts)
+        job = Scheduler(self.args, command=cmd_list)
+        result = job.run()
+        return result
 
 class Local():
     def __init__(self, options=[], command=None):
@@ -258,15 +288,22 @@ class Local():
             if not self.command:
                 raise OSError('No command provided')
             command = self.command
-        command = shlex.split(command)
         logger.info('Launching local command: %s', command)
-        #return True
         try:
-            result = subprocess.run(command,
-                                    #stderr=subprocess.PIPE,
-                                    #stdout=subprocess.PIPE,
-                                    capture_output=True,
-                                    check=True)
+            if type(command) is not list:
+                #command = shlex.split(command)
+                result = subprocess.run(command,
+                                        shell=True,
+                                        stderr=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        #capture_output=True,
+                                        check=True)
+            else:
+                result = subprocess.run(command,
+                                        stderr=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        #capture_output=True,
+                                        check=True)
         except subprocess.CalledProcessError as err:
             logger.error('An error occurred running the command: %s', err)
             return None
@@ -287,6 +324,8 @@ class Sbatch():
         command_options.extend(options)
         if not wrapcmd:
             wrapcmd = self.wrapcmd
+        if type(wrapcmd) is list:
+            wrapcmd = ' '.join(wrapcmd)
         command_options.extend(['--wrap="%s"' % wrapcmd])
 
         logger.info('Launching sbatch with: %s', command_options)
@@ -323,7 +362,7 @@ class Scheduler():
 class Samtools():
     def __init__(self, args, extra):
         command = 'samtools'
-        if extra.get('--samtools_path'):
+        if '--samtools_path' in extra:
             samtools_path = extra[extra.index('--samtools_path')+1]
             if os.path.is_file(samtools_path):
                 samtools_path = os.path.dirname(samtools_path)
@@ -331,7 +370,14 @@ class Samtools():
                 raise OSError('Samtools not found in provided path')
             command = os.path.join(samtools_path, command)
         self.command = command
+        self.args = args
         ''' '''
+
+    def faidx(self, opts=[]):
+        '''Run samtools faidx with provided options
+        '''
+        command = 'faidx'
+        return self.run(command, opts)
 
     def flagstat(self, opts=[]):
         '''Run samtools flagstat with provided options
@@ -358,13 +404,11 @@ class Samtools():
         return self.run(command, opts)
 
     def run(self, command, opts=[]):
-        scheduler = Scheduler(args)
         cmd_list = [self.command, command]
         cmd_list.extend(opts)
-        cmd_str = ' '.join(cmd_list)
-        if result.return_code != 0:
-            raise OSError(result.stderr)
-        return result.stdout
+        job = Scheduler(self.args, command=cmd_list)
+        result = job.run()
+        return result
 
 
 def findFiles(dname):
@@ -451,35 +495,31 @@ def main():
 
     trimmer.trim()
 
-    logger.info('Updated file meta:\n%s', filemeta)
-
-    return 0
-
     ##
     # Map/align the files to the reference sequence
     logger.info('Instantiating aligner...')
     aligner = Aligner(filemeta, args, extra)
     aligner.align()
 
+    samtools = Samtools(args, extra)
     for label in filemeta:
         ##
         # Convert to BAM
         tmpfd, tmpfile = tempfile.mkstemp()
         command_opts = ['-b', '-S', '-o', tmpfile, filemeta[label]['alignfiles'][0]]
         logger.info('Converting file %s to BAM using temp file %s', filemeta[label]['alignfiles'][0], tmpfile)
-        samtools = Samtools(args)
         try:
             ret = samtools.view(command_opts)
         except OSError as err:
             logger.error('Error running samtools view: %s', err)
             sys.exit(1)
-        if not os.path.getsize(tempfile) > 0:
+        if not os.path.getsize(tmpfile) > 0:
             logger.error('Error running samtools view: zero-size file generated')
             sys.exit(1)
         ##
         # Sort the BAM file
         sortfd, sortfile = tempfile.mkstemp()
-        command_opts = ['-@', NUM_THREADS, '-o', sortfile, tmpfile]
+        command_opts = ['-@', '%s' % NUM_THREADS, '-o', sortfile, tmpfile]
         logger.info('Sorting the BAM file %s into file %s', tmpfile, sortfile)
         try:
             ret = samtools.sort(command_opts)
@@ -489,13 +529,12 @@ def main():
         if not os.path.getsize(sortfile) > 0:
             logger.error('Error running samtools sort: zero-size file generated')
             sys.exit(1)
-        tmpfd = None
-        sortfd = None
+        sortfd = tmpfd = None
         os.unlink(tmpfile)
         outfile = label + '.bam'
         if args.outdir:
             outfile = os.path.join(args.outdir, outfile)
-        os.rename(sortfile, outfile)
+        shutil.move(sortfile, outfile)
         sortfile = outfile
         ##
         # Run samtools index on sorted BAM file
@@ -509,42 +548,105 @@ def main():
         ##
         # Run samtools flagstat on the sorted BAM file
         outfile = label + '_mapping.stat'
-        command_opts = [sortfile, outfile]
+        if args.outdir:
+            outfile = os.path.join(args.outdir, outfile)
+        command_opts = ['-@', '%s' % NUM_THREADS, sortfile]
         logger.info('Generating mapping stats for sorted, indexed BAM file %s', sortfile)
         try:
             ret = samtools.flagstat(command_opts)
         except OSError as err:
             logger.info('Error running samtools flagstat: %s', err)
             sys.exit(1)
+        if ret.stdout:
+            with open(outfile, 'wb') as fd:
+                fd.write(ret.stdout)
         filemeta[label].update({'sortindex': [sortfile]})
+
+    logger.info('Updated file meta:\n%s', filemeta)
 
     ##
     # Use picard tools to MarkDuplicates
-    java_opts = ['-XX:ParallelGCThreads=%s' % NUM_THREADS, '-XX:-UseGCOverheadLimit', '-Xms24576',
-                 '-Xmx24576', '-XX:NewSize=6144M', '-XX:MaxNewSize=6144M']
+    java_opts = ['-XX:ParallelGCThreads=%s' % NUM_THREADS, '-XX:-UseGCOverheadLimit', '-Xms24576M',
+                 '-Xmx24576M', '-XX:NewSize=6144M', '-XX:MaxNewSize=6144M']
+    jarfile = 'picard.jar'
+    if '--picard_path' in extra:
+        picard_path = extra[extra.index('--picard_path')+1]
+        if not os.path.isdir(picard_path):
+            picard_path = os.path.dirname(picard_path)
+        jarfile = os.path.join(picard_path, jarfile)
+    if not os.path.exists(jarfile):
+        raise OSError('Picard jar file not found: %s', jarfile)
     for label in filemeta:
         input_filename = filemeta[label]['sortindex'][0]
         output_filename = label + '_dedup.bam'
-        matrix_filename = label + '_dedup.matrics'
+        metrics_filename = label + '_dedup.metrics'
         if args.outdir:
             output_filename = os.path.join(args.outdir, output_filename)
-            matrix_filename = os.path.join(args.outdir, matrix_filename)
-        picard_opts = ['I=%s' % input_filename, 'O=%s' % output_filename, 'M=%s' % matrix_filename, 'AS=true']
+            metrics_filename = os.path.join(args.outdir, metrics_filename)
+        picard_opts = ['MarkDuplicates', 'I=%s' % input_filename, 'O=%s' % output_filename, 'M=%s' % metrics_filename, 'AS=true']
+        logger.debug('Mark duplicates with: java %s -jar %s %s', ' '.join(java_opts), jarfile, ' '.join(picard_opts))
+        jvm = JavaJar(jarfile, args, extra, java_opts=java_opts, jar_opts=picard_opts)
+        try:
+            ret = jvm.run()
+        except OSError as err:
+            logger.error('Error running java jar: %s', err)
+            sys.exit(1)
 
-    ##
-    # Use sametools index on resultant BAM
-
+        ##
+        # Use sametools index on resultant BAM
+        command_opts = [output_filename]
+        logger.info('Indexing de-duped BAM file %s', output_filename)
+        try:
+            ret = samtools.index(command_opts)
+        except OSError as err:
+            logger.error('Error running samtools index: %s', err)
+            sys.exit(1)
+        filemeta[label].setdefault('dedup', [output_filename])
 
     ##
     # Use GenomeToolkit HaplotypeCaller with genome reference
+    if not os.path.exists(args.refseq + 'fai'):
+        logger.info('Indexing refenence FASTA...')
+        command_opts = [args.refseq]
+        try:
+            ret = samtools.faidx(command_opts)
+        except OSError as err:
+            logger.error('Error running samtolos faidx: %s', err)
+            sys.exit(1)
+    if not os.path.exists(os.path.splitext(args.refseq)[0] + '.dict'):
+        logger.info('Generating sequence dictionary for reference FASTA...')
+        output_filename = os.path.splitext(args.refseq)[0] + '.dict'
+        picard_opts = ['CreateSequenceDictionary', 'R=%s' % args.refseq, 'O=%s' % output_filename]
+        logger.debug('Create sequence dictionary with: java %s -jar %s %s', ' '.join(java_opts), jarfile, ' '.join(picard_opts))
+        jvm = JavaJar(jarfile, args, extra, java_opts=java_opts, jar_opts=picard_opts)
+        try:
+            ret = jvm.run()
+        except OSError as err:
+            logger.error('Error running java jar: %s', err)
+            sys.exit(1)
+        
+    jarfile = 'GenomeAnalysisTK.jar'
+    if '--gatk_path' in extra:
+        gatk_path = extra[extra.index('--gatk_path')+1]
+        if not os.path.isdir(gatk_path):
+            gatk_path = os.path.dirname(gatk_path)
+        jarfile = os.path.join(gatk_path, jarfile)
+    if not os.path.exists(jarfile):
+        raise OSError('GenomeAnalysisToolkit jar not found at %s', jarfile)
     for label in filemeta:
         input_filename = filemeta[label]['dedup'][0]
         output_filename = label + '_snps.indels.vcf'
         if args.outdir:
             output_filename = os.path.join(args.outdir, output_filename)
-            gtk_opts = ['--native-pair-hmm-threads', '%s' % NUM_THREADS, '-R', args.refseq,
-                        '-stand_call_conf', '30', '-stand_emit_conf', '10', '-I', input_filename,
-                        '-o', output_filename]
+        gatk_opts = ['-T', 'HaplotypeCaller', '-R', args.refseq, '-stand_call_conf', '30',
+                     '-I', input_filename, '-o', output_filename]
+        logger.debug('HaplotypeCaller: java %s -jar %s %s', ' '.join(java_opts), jarfile, ' '.join(gatk_opts))
+        jvm = JavaJar(jarfile, args, extra, java_opts=java_opts, jar_opts=gatk_opts)
+        try:
+            ret = jvm.run()
+        except OSError as err:
+            logger.error('Error running java jar: %s', err)
+            sys.exit(1)
 
     logger.info('Complete')
     return 0
