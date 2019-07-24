@@ -226,25 +226,48 @@ class Aligner():
         if not options:
             options = self.options[:]
         for label in self.filemeta:
-            r1, r2 = self.filemeta[label].get('trimfiles')
-            outfile = '%s.bam' % label
-            #outf2 = '%s_trim_R2.fastq.gz' % label
-            if self.outdir:
-                outfile = os.path.join(self.outdir, outfile)
-                #outf2 = os.path.join(self.outdir, outf2)
+            sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
             command_options = [self.command, self.method]
             command_options.extend(options)
             if self.method == 'mem':
+                r1, r2 = self.filemeta[label].get('trimfiles')
+                outfile = '%s.bam' % label
+                if self.outdir:
+                    outfile = os.path.join(self.outdir, outfile)
                 command_options[-1] = """'%s'""" % command_options[-1].format(input=label)
-            command_options.append(self.refseq)
-            command_options.extend([r1, r2])
-            command_options.extend([self.outflag, outfile])
-            command_options = ' '.join(command_options)
-            sbatch_opts = ['-N', '1', '-c', '16', '--mem=64g']
-            job = Scheduler(self.args, sbatch_opts, command_options)
-            result = job.run()
-            if result:
-                self.filemeta[label].update({'alignfiles': [outfile]})
+                command_options.append(self.refseq)
+                command_options.extend([r1, r2])
+                command_options.extend([self.outflag, outfile])
+                command_options = ' '.join(command_options)
+                job = Scheduler(self.args, sbatch_opts, command_options)
+                result = job.run()
+                if result:
+                    self.filemeta[label].update({'alignfiles': [outfile]})
+            else:
+                for trimfile in self.filemeta[label].get('trimfiles'):
+                    outfile = '%s_R%d.sai' % (label, self.filemeta[label]['trimfiles'].index(trimfile) + 1)
+                    if self.outdir:
+                        outfile = os.path.join(self.outdir, outfile)
+                    cmdopts = command_options[:]
+                    cmdopts.extend([self.outflag, outfile, self.refseq, trimfile])
+                    job = Scheduler(self.args, sbatch_opts, cmdopts)
+                    result = job.run()
+                    if not result:
+                        raise OSError('Unable to run bwa aln to align the sequence file %s' % trimfile)
+                    self.filemeta[label].setdefault('alignfiles', [])
+                    self.filemeta[label]['alignfiles'].append(outfile)
+                outfile = '%s.bam' % label
+                command_options = [self.command, 'sampe', self.refseq]
+                for sai in self.filemeta[label].get('alignfiles'):
+                    command_options.append(sai)
+                for fq in self.filemeta[label].get('trimfiles'):
+                    command_options.append(fq)
+                command_options.extend(['-f', outfile])
+                job = Scheduler(self.args, sbatch_opts, command_options)
+                result = job.run()
+                if not result:
+                    raise OSError('Unable to run bwa sampe to merge the alignments')
+                self.filemeta[label]['alignfiles'] = [outfile]
         return None
 
 
