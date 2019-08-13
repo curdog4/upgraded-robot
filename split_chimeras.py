@@ -179,6 +179,7 @@ from Bio.Blast.Applications import NcbiblastxCommandline
 
 COVERAGE_THRESHOLD = 0.60
 IDENTITY_THRESHOLD = 0.40
+LENGTH_CUTOFF = 100
 PADDING_FACTOR=0.25
 #UNIPROT_DBFILE = '/data/gpfs/home/dcurdie/scratch/UniProtKB/uniprot_sprot.20190627-151946.fasta'
 UNIPROT_DBFILE = '/data/gpfs/home/dcurdie/scratch/VectorBase/mosquito.fa'
@@ -194,7 +195,7 @@ logger = logging.getLogger('SplitChimeras')
 def adjust_coords(coords, mrna, gene, exons, pad_factor):
     pos_ptr = mrna.start
     start_pos = stop_pos = None
-    feature_len = coords[1] - coords[0]
+    feature_len = coords[1] - coords[0] + 1
     padding = int(math.ceil(pad_factor * float(feature_len)))
     logger.debug('Feature length is %d, padding is %d', feature_len, padding)
     offset = 0
@@ -204,7 +205,7 @@ def adjust_coords(coords, mrna, gene, exons, pad_factor):
     while pos_ptr <= mrna.stop:
         for exon in exons:
             if pos_ptr >= exon[0] and pos_ptr <= exon[1]:
-                #logger.debug('Within exon %s at position %d', exon, pos_ptr)
+                logger.debug('Within exon %s at position %d', exon, pos_ptr)
                 if start_pos:
                     feature_len -= 1
                 if offset == coords[0]:
@@ -218,13 +219,33 @@ def adjust_coords(coords, mrna, gene, exons, pad_factor):
                     offset += 1
                     break
                 offset += 1
-            #logger.debug('Not within exon %s at position %d', exon, pos_ptr)
+            logger.debug('Not within exon %s at position %d', exon, pos_ptr)
         if start_pos and stop_pos:
             start_pos -= padding
             stop_pos += padding
             break
         pos_ptr += 1
     return start_pos, stop_pos
+
+
+def qcov(hsp):
+    return abs(int(hsp[11]) - int(hsp[10])) + 1
+
+
+def separated(hsp1, hsp2):
+    ''' given two hsps, return True if
+    overlap les than 20% of the shorter and overlap less than 60 bp
+    '''
+    length1 = qcov(hsp1)
+    length2 = qcov(hsp2)
+    start = min(int(hsp1[10]), int(hsp1[11]), int(hsp2[10]), int(hsp2[11]))
+    end = max(int(hsp1[10]), int(hsp1[11]), int(hsp2[10]), int(hsp2[11]))
+    overlap = length1 + length2 - (end - start) + 1
+    # value of overlap can < 0 but only the upper limit maters
+    if overlap < min(60, 0.2 * min(length1, length2)):
+        return True
+    return False
+
 
 def blast_sequence_files(args, suffix='fa'):
     outdir = os.path.join(args.outdir, 'seqs')
@@ -234,7 +255,7 @@ def blast_sequence_files(args, suffix='fa'):
     logger.debug('Processing %d sequence files', len(inputFastaFiles))
     blastfmt = '"6 qseqid qlen sseqid slen qframe pident nident length mismatch gapopen qstart qend sstart send evalue bitscore"'
     blastmap = {}
-    for inputFastaFile in inputFastaFiles[0:10]:
+    for inputFastaFile in [x for x in inputFastaFiles if x.endswith('seqs/Mecry_09G235600.1.fasta')]:
         label = os.path.splitext(os.path.basename(inputFastaFile))[0]
         outfname = os.path.join(os.path.dirname(inputFastaFile), '%s_blastx.tbl' % label)
         blastCmd = NcbiblastxCommandline(cmd='blastx', query=inputFastaFile,
@@ -267,15 +288,22 @@ def blast_sequence_files(args, suffix='fa'):
             subject_id = fields[2]
             matchkey = '%s\0%s' % (featurename, subject_id)
             ##
-            # filtering criteria: percent identity, coverage
+            # filtering criteria: query len, percent identity, coverage, bitscore
+            if qcov(fields) < LENGTH_CUTOFF:
+                logger.debug('skip record with insufficent query length: %s < %s',
+                             qcov(fields), LENGTH_CUTOFF)
             if float(fields[5]) / 100.0 < args.identity:
                 logger.debug('skip record with low identity: %s < %s',
                              float(fields[5]) / 100.0, args.identity)
                 continue
-            cov = float(fields[7]) / float(fields[1])
+            cov = float(fields[7]) * 3 / float(fields[1])
             if cov < args.coverage:
                 logger.debug('skip record with low coverage: %s < %s',
                              cov, args.coverage)
+                continue
+            if int(fields[3]) / 2 < int(fields[15]):
+                logger.debug('skip record with low bitscore value: %s / 2 < %s',
+                             fields[3], fields[15])
             blastmap.setdefault(featurename, {})
             blastmap[featurename].setdefault(matchkey, [])
             blastmap[featurename][matchkey].append(fields)
@@ -298,14 +326,27 @@ def separate_transcripts_for_blast(args, suffix='fa'):
 
 def list_chimeric_features(blastmap):
     chimeric_features = []
-    for f in blastmap.keys():
-        for k, v in blastmap[f].items():
-            if len(v) < 2:
+    for f in list(blastmap.keys())[:]:
+        feature_pairs = []
+        for k, v in list(blastmap[f].items())[:]:
+            if len(v[:]) < 2:
                 # not likely chimeric
                 blastmap[f].pop(k)
                 continue
-            logger.debug('Likely chimeric feature %s: key:%s, hits:%d', f, k.replace(f, ''), len(v))
-            chimeric_features.append(f)
+            for i in range(len(v[:])):
+                separate = True
+                for j in range(i+1, len(v[:])):
+                    separate = min(separate, separated(v[i], v[j]))
+                if separate:
+                    logger.debug('Likely chimeric feature %s: key:%s, hits:%d', f, k.replace(f, ''), len(v))
+                    logger.debug('HSP: %s', v[i])
+                    feature_pairs.append(v[i])
+        for i in range(len(feature_pairs)):
+            separate = True
+            for j in range(i+1, len(feature_pairs)):
+                separate = min(separate, separated(feature_pairs[i], feature_pairs[j]))
+            if separate:
+                chimeric_features.append(f)
     chimeric_features = list(set(chimeric_features))
     return chimeric_features
 
@@ -404,7 +445,7 @@ def main():
         logger.setLevel(logging.INFO)
     logger.info('Starting')
     logger.debug('Args=%s extra=%s', args, extra)
-    dbfile = os.path.splitext(args.gff)[0] + '.db'
+    dbfile = os.path.splitext(os.path.basename(args.gff))[0] + '.db'
     dbfile = os.path.join(args.outdir, dbfile)
     if not os.path.exists(dbfile):
         logger.info('Initialize the database...')
