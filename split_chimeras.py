@@ -195,7 +195,7 @@ logger = logging.getLogger('SplitChimeras')
 def adjust_coords(coords, mrna, gene, exons, pad_factor):
     pos_ptr = mrna.start
     start_pos = stop_pos = None
-    feature_len = coords[1] - coords[0] + 1
+    feature_len = coords[1] - coords[0]
     padding = int(math.ceil(pad_factor * float(feature_len)))
     logger.debug('Feature length is %d, padding is %d', feature_len, padding)
     offset = 0
@@ -203,23 +203,20 @@ def adjust_coords(coords, mrna, gene, exons, pad_factor):
     logger.debug('Proceeding through %s mRNA starting from %d', mrna.id, pos_ptr)
     logger.debug('Exons: %s', exons)
     while pos_ptr <= mrna.stop:
+        #logger.debug('Position pointer: %d', pos_ptr)
         for exon in exons:
             if pos_ptr >= exon[0] and pos_ptr <= exon[1]:
-                logger.debug('Within exon %s at position %d', exon, pos_ptr)
+                #logger.debug('Within exon %s at position %d', exon, pos_ptr)
                 if start_pos:
                     feature_len -= 1
-                if offset == coords[0]:
-                    logger.debug('Found start position at %d', pos_ptr)
+                elif offset == coords[0]:
                     start_pos = pos_ptr
-                    offset += 1
-                    break
-                if not feature_len:
-                    logger.debug('Found stop position at %d', pos_ptr)
-                    stop_pos = pos_ptr
-                    offset += 1
-                    break
+                    feature_len -= 1
                 offset += 1
-            logger.debug('Not within exon %s at position %d', exon, pos_ptr)
+                if not feature_len:
+                    stop_pos = pos_ptr
+                    break
+            #logger.debug('Not within exon %s at position %d', exon, pos_ptr)
         if start_pos and stop_pos:
             start_pos -= padding
             stop_pos += padding
@@ -255,7 +252,7 @@ def blast_sequence_files(args, suffix='fa'):
     logger.debug('Processing %d sequence files', len(inputFastaFiles))
     blastfmt = '"6 qseqid qlen sseqid slen qframe pident nident length mismatch gapopen qstart qend sstart send evalue bitscore"'
     blastmap = {}
-    for inputFastaFile in [x for x in inputFastaFiles if x.endswith('seqs/Mecry_09G235600.1.fasta')]:
+    for inputFastaFile in [x for x in inputFastaFiles if x.endswith('seqs/Mecry_04G114660.1.fasta')]:
         label = os.path.splitext(os.path.basename(inputFastaFile))[0]
         outfname = os.path.join(os.path.dirname(inputFastaFile), '%s_blastx.tbl' % label)
         blastCmd = NcbiblastxCommandline(cmd='blastx', query=inputFastaFile,
@@ -290,20 +287,20 @@ def blast_sequence_files(args, suffix='fa'):
             ##
             # filtering criteria: query len, percent identity, coverage, bitscore
             if qcov(fields) < LENGTH_CUTOFF:
-                logger.debug('skip record with insufficent query length: %s < %s',
-                             qcov(fields), LENGTH_CUTOFF)
+                logger.debug('skip record for %s with insufficent query length: %s < %s',
+                             fields[2], qcov(fields), LENGTH_CUTOFF)
             if float(fields[5]) / 100.0 < args.identity:
-                logger.debug('skip record with low identity: %s < %s',
-                             float(fields[5]) / 100.0, args.identity)
+                logger.debug('skip record for %s with low identity: %s < %s',
+                             fields[2], float(fields[5]) / 100.0, args.identity)
                 continue
-            cov = float(fields[7]) * 3 / float(fields[1])
+            cov = float(fields[7]) / float(fields[3])
             if cov < args.coverage:
-                logger.debug('skip record with low coverage: %s < %s',
-                             cov, args.coverage)
+                logger.debug('skip record for %s with low coverage: %s < %s',
+                             fields[2], cov, args.coverage)
                 continue
             if int(fields[3]) / 2 < int(fields[15]):
-                logger.debug('skip record with low bitscore value: %s / 2 < %s',
-                             fields[3], fields[15])
+                logger.debug('skip record for %s with low bitscore value: %s / 2 < %s',
+                             fields[2], fields[3], fields[15])
             blastmap.setdefault(featurename, {})
             blastmap[featurename].setdefault(matchkey, [])
             blastmap[featurename][matchkey].append(fields)
@@ -473,14 +470,14 @@ def main():
     logger.info('Write out likely chimeric sequences')
     for l, m in coords.items():
         chromRec = genomeSeqs[m['chr']]
-        idx = 0
+        idx = 96
         for coord in m['coords']:
             idx += 1
             if coord[0] < coord[1]:
                 subseq = chromRec[coord[0]:coord[1]]
             else:
                 subseq = chromRec[coord[1]:coord[0]]
-            subseq.id = l + '.%d' % idx
+            subseq.id = l + '.%s' % chr(idx)
             logger.debug('%s subsequence [%s]', l, coord)
             outf = os.path.join(args.outdir, '%s.fasta' % subseq.id)
             with open(outf, 'w') as fd:
