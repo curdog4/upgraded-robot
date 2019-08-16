@@ -252,7 +252,7 @@ def blast_sequence_files(args, suffix='fa'):
     logger.debug('Processing %d sequence files', len(inputFastaFiles))
     blastfmt = '"6 qseqid qlen sseqid slen qframe pident nident length mismatch gapopen qstart qend sstart send evalue bitscore"'
     blastmap = {}
-    for inputFastaFile in [x for x in inputFastaFiles if x.endswith('seqs/Mecry_04G114660.1.fasta')]:
+    for inputFastaFile in [x for x in inputFastaFiles]: # if x.endswith('seqs/Mecry_04G114660.1.fasta')]:
         label = os.path.splitext(os.path.basename(inputFastaFile))[0]
         outfname = os.path.join(os.path.dirname(inputFastaFile), '%s_blastx.tbl' % label)
         blastCmd = NcbiblastxCommandline(cmd='blastx', query=inputFastaFile,
@@ -298,7 +298,7 @@ def blast_sequence_files(args, suffix='fa'):
                 logger.debug('skip record for %s with low coverage: %s < %s',
                              fields[2], cov, args.coverage)
                 continue
-            if int(fields[3]) / 2 < int(fields[15]):
+            if float(fields[3]) / 2.0 < float(fields[15]):
                 logger.debug('skip record for %s with low bitscore value: %s / 2 < %s',
                              fields[2], fields[3], fields[15])
             blastmap.setdefault(featurename, {})
