@@ -107,7 +107,7 @@ def main():
     logger.info('Begin')
     coordinate_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in DATA_FILES}
+        future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in ['seqs/Mecry_07G198110.1_blastx.tbl']}
         for future in concurrent.futures.as_completed(future_map):
             fname = future_map[future]
             try:
@@ -121,20 +121,25 @@ def main():
 
     #headers = 'qseqid,qlen,sseqid,slen,qframe,pident,nident,length,mismatch,gapopen,qstart,qend,sstart,send,evalue,bitscore'
     headers = 'start\tend'
-    for label, coordinates in coordinate_map.items():
+    for label, coordinates in list(coordinate_map.items())[0:1]:
         if len(coordinates) < 3:
             logger.error('Insufficient records to continue for %s', label)
             continue
 
-        sio = io.StringIO(headers + '\n')
+        sio = io.StringIO()
+        sio.write(headers + '\n')
         for coords in coordinates:
             sio.write('%s\t%s\n' % (coords[10], coords[11]))
         sio.seek(0)
+        #logger.debug('Raw table data:\n%s', sio.read())
+        sio.seek(0)
         data = pd.read_csv(sio, sep='\t')
+        #logger.debug('Data:\n%s', data)
 
         mms = MinMaxScaler()
         mms.fit(data)
         data_transformed = mms.transform(data)
+        #logger.debug('Data Xform:\n%s', data_transformed)
 
         wcss = []
         K = range(1, min(len(coordinates), 15))
@@ -145,6 +150,9 @@ def main():
 
         n = optimal_number_of_clusters(wcss)
         logger.info('Predicted optimal number of clusters for %s: %s', label, n)
+        if not n:
+            logger.error('Number of clusters could not be calculated for %s', label)
+            continue
 
         '''
         plt.plot(K, wcss, 'bx-')
@@ -152,14 +160,33 @@ def main():
         plt.ylabel('wcss')
         plt.title('Elbow Method For Optimal k (%s)' % label)
         plt.show()
-
+        '''
         km = KMeans(n_clusters=n)
         clusters = km.fit_predict(data_transformed)
-        '''
+        #logger.debug('Clusters:\n%s', clusters)
+        cm = []
+        for i in range(n):
+            cm.append([])
+        for i in range(len(data.index)):
+            row = data.iloc[i]
+            cn =  clusters[i]
+            #logger.debug('For row %d (%s, %s) the cluster number is %d',
+            #             i, row[0], row[1], cn)
+            cm[cn].append((row[0], row[1]))
+        #logger.debug('Cluster sorted rows:\n%s', cm)
+        for cntr in cm:
+            start = min([x[0] for x in cntr])
+            end = max([x[1] for x in cntr])
+            logger.info('Possible chimeric gene in region from %s to %s',
+                        start, end)
 
     end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', end - start)
     return 0
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        logger.info('Received keyboard interrupt. Aborting.')
+        sys.exit(1)
