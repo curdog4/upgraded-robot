@@ -34,6 +34,14 @@ QCOV_THRESHOLD = 0.30
 SCOV_THRESHOLD = 0.70
 PIDENT_THRESHOLD = 20.0
 
+SUBLIST = ['seqs/Mecry_04G102350.1_blastx.tbl', 'seqs/Mecry_05G142250.1_blastx.tbl', 'seqs/Mecry_09G233490.1_blastx.tbl',
+           'seqs/Mecry_01G024890.1_blastx.tbl', 'seqs/Mecry_04G120760.1_blastx.tbl', 'seqs/Mecry_09G230850.1_blastx.tbl',
+           'seqs/Mecry_04G119610.2_blastx.tbl', 'seqs/Mecry_07G182900.1_blastx.tbl', 'seqs/Mecry_05G144460.1_blastx.tbl',
+           'seqs/Mecry_01G001370.1_blastx.tbl', 'seqs/Mecry_09G236430.1_blastx.tbl', 'seqs/Mecry_04G119610.1_blastx.tbl',
+           'seqs/Mecry_08G212340.1_blastx.tbl', 'seqs/Mecry_02G064460.1_blastx.tbl', 'seqs/Mecry_05G147260.1_blastx.tbl',
+           'seqs/Mecry_09G247560.1_blastx.tbl', 'seqs/Mecry_04G120760.2_blastx.tbl', 'seqs/Mecry_04G119610.3_blastx.tbl',
+           'seqs/Mecry_05G127730.1_blastx.tbl']
+
 def calculate_data(data):
     wcss = []
     for n in range(1, min(len(data), 15)):
@@ -54,8 +62,11 @@ def get_blastx_table_data(fname):
             fields[idx] = float(fields[idx])
         '''Checks for 'fitness' of the result
         '''
-        if fields[3] * 3 > fields[1] :
+        if fields[1] < 3 * fields[3] :
             # subject longer than query
+            continue
+        if qlen(fields) < LENGTH_THRESHOLD:
+            # insufficient alignment length
             continue
         if fields[5] < PIDENT_THRESHOLD:
             # insufficient identity
@@ -94,20 +105,21 @@ def qcov(hsp):
     return float(qlen(hsp)) / float(hsp[1])
 
 def qlen(hsp):
-    return abs(hsp[11] - hsp[10])
+    return abs(hsp[11] - hsp[10]) + 1
 
 def scov(hsp):
-    return  float(slen(hsp)) / float(hsp[3])
+    return  float(slen(hsp)) / float(hsp[3]) 
 
 def slen(hsp):
-    return abs(hsp[13] - hsp[12])
+    return abs(hsp[13] - hsp[12]) + 1
 
 def main():
     start = time.time()
     logger.info('Begin')
     coordinate_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in ['seqs/Mecry_07G198110.1_blastx.tbl']}
+        #future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in ['seqs/Mecry_07G198110.1_blastx.tbl']}
+        future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in SUBLIST}
         for future in concurrent.futures.as_completed(future_map):
             fname = future_map[future]
             try:
@@ -121,7 +133,7 @@ def main():
 
     #headers = 'qseqid,qlen,sseqid,slen,qframe,pident,nident,length,mismatch,gapopen,qstart,qend,sstart,send,evalue,bitscore'
     headers = 'start\tend'
-    for label, coordinates in list(coordinate_map.items())[0:1]:
+    for label, coordinates in coordinate_map.items():
         if len(coordinates) < 3:
             logger.error('Insufficient records to continue for %s', label)
             continue
