@@ -2,6 +2,11 @@
 0-qseqid 1-qlen 2-sseqid 3-slen 4-qframe 5-pident 6-nident 7-length
 8-mismatch 9-gapopen 10-qstart 11-qend 12-sstart 13-send 14-evalue
 15-bitscore
+
+Logic borrowed from:
+https://blog.cambridgespark.com/how-to-determine-the-optimal-number-of-clusters-for-k-means-clustering-14f27070048f
+https://jtemporal.com/kmeans-and-elbow-method/
+
 '''
 
 import concurrent.futures
