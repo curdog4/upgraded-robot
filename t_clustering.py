@@ -1,7 +1,21 @@
 '''Test use of kmeans clustering to determine chimeras in blastx table results
+Non-standard BLAST+ Table Field Values:
 0-qseqid 1-qlen 2-sseqid 3-slen 4-qframe 5-pident 6-nident 7-length
 8-mismatch 9-gapopen 10-qstart 11-qend 12-sstart 13-send 14-evalue
 15-bitscore
+
+LAST Tab Table Field Values:
+0-score 1-name1 2-start1 3-alnSize1 4-strand1 5-seqSize1 6-name2
+7-start2 8-alnSize2 9-strand2 10-seqSize2 11-blocks
+
+LAST BlastTab Table Field Values:
+0-query id 1-subject id 2-% identity 3-alignment length 4-mismatches
+5- gap opens 6-q. start 7-q. end 8-s. start 9-s. end 10-evalue 11-bit score
+
+LAST BlastTab+ Table Field Values:
+0-query id 1-subject id 2-% identity 3-alignment length 4-mismatches
+5-gap opens 6-q. start 7-q. end 8-s. start 9-s. end 10-evalue 11-bit score
+12-query length 13-subject length
 
 Logic borrowed from:
 https://blog.cambridgespark.com/how-to-determine-the-optimal-number-of-clusters-for-k-means-clustering-14f27070048f
@@ -32,20 +46,13 @@ logConfData = json.loads(logConfContent)
 logging.config.dictConfig(logConfData)
 logger = logging.getLogger('DetectChimeras')
 
+FTYPE = 0
 DATA_DIR = 'seqs'
 DATA_FILES = glob.glob(os.path.join(DATA_DIR, '*_blastx.tbl'))
 LENGTH_THRESHOLD = 100
 QCOV_THRESHOLD = 0.30
 SCOV_THRESHOLD = 0.70
 PIDENT_THRESHOLD = 20.0
-
-SUBLIST = ['seqs/Mecry_04G102350.1_blastx.tbl', 'seqs/Mecry_05G142250.1_blastx.tbl', 'seqs/Mecry_09G233490.1_blastx.tbl',
-           'seqs/Mecry_01G024890.1_blastx.tbl', 'seqs/Mecry_04G120760.1_blastx.tbl', 'seqs/Mecry_09G230850.1_blastx.tbl',
-           'seqs/Mecry_04G119610.2_blastx.tbl', 'seqs/Mecry_07G182900.1_blastx.tbl', 'seqs/Mecry_05G144460.1_blastx.tbl',
-           'seqs/Mecry_01G001370.1_blastx.tbl', 'seqs/Mecry_09G236430.1_blastx.tbl', 'seqs/Mecry_04G119610.1_blastx.tbl',
-           'seqs/Mecry_08G212340.1_blastx.tbl', 'seqs/Mecry_02G064460.1_blastx.tbl', 'seqs/Mecry_05G147260.1_blastx.tbl',
-           'seqs/Mecry_09G247560.1_blastx.tbl', 'seqs/Mecry_04G120760.2_blastx.tbl', 'seqs/Mecry_04G119610.3_blastx.tbl',
-           'seqs/Mecry_05G127730.1_blastx.tbl']
 
 def calculate_data(data):
     wcss = []
@@ -55,39 +62,101 @@ def calculate_data(data):
         wcss.append(kmeans.inertia_)
     return wcss
 
-def get_blastx_table_data(fname):
+def get_blastx_table_data(fname, ftype):
     with open(fname, 'r') as fdesc:
         fdata = fdesc.read()
     coordinates = []
     for line in fdata.splitlines():
+        if line.startswith('#'):
+            continue
         fields = line.split('\t')
-        for idx in [1, 3, 7, 10, 11, 12, 13]:
+        # Field value conversions to int or float
+        int_fields = [1, 3, 7, 10, 11, 12, 13]
+        float_fields = [5, 15]
+        if ftype == 1:  # LAST TAB
+            int_fields = [0, 2, 3, 5, 7, 8, 10]
+            float_fields = []
+        elif ftype == 2:  # LAST BlastTab
+            int_fields = [3, 4, 5, 6, 7, 8, 9]
+            float_fields = [2, 11]
+        elif ftype == 3:  # LAST BlastTab+
+            int_fields = [3, 4, 5, 6, 7, 8, 9, 12, 13]
+            float_fields = [2, 11]
+        for idx in int_fields:
             fields[idx] = int(fields[idx])
-        for idx in [5, 15]:
+        for idx in float_fields:
             fields[idx] = float(fields[idx])
-        '''Checks for 'fitness' of the result
-        '''
+
+        if is_fit(fields, ftype):
+            coordinates.append(fields)
+    return coordinates
+
+
+def is_fit(fields, ftype):
+    '''Checks for 'fitness' of the result
+    '''
+    fit = True
+    if ftype == 0:
+        # This is if the file format is BLAST+ Custom
         if fields[1] < 3 * fields[3] :
             # subject longer than query
-            continue
-        if qlen(fields) < LENGTH_THRESHOLD:
-            # insufficient alignment length
-            continue
+            fit = False
         if fields[5] < PIDENT_THRESHOLD:
             # insufficient identity
-            continue
-        if qcov(fields) < QCOV_THRESHOLD:
-            # insufficient query coverage
-            continue
-        if scov(fields) < SCOV_THRESHOLD:
-            # insufficient subject coverage
-            continue
-        if float(fields[3]) / 2 < fields[15]:
+            fit = False
+        if float(fields[3]) / 2.0 < fields[15]:
             # insufficient bitscore value
-            continue
+            fit = False
+    elif ftype == 1:
+        # This is if the file format is 1 (LAST TAB)
+        if fields[10] < 3 * fields[5]:
+            # subject longer than query
+            fit = False
+        # Cannot perform this check
+        #if fields[] < PIDENT_THRESHOLD:
+        #    # insufficent identity
+        #    fit = False
+        if float(fields[0]) / float(fields[5]) < 1.0:
+            # insufficient score value
+            fit = False
+    elif ftype == 2:
+        # This is if the file format is 2 (LAST BlastTab)
+        # Cannot perform this check
+        #if fields[] < 3 * fields[]:
+        #    # subject longer than query
+        #    fit = False
+        if fields[2] < PIDENT_THRESHOLD:
+            # insufficient identity
+            fit = False
+        if float(fields[11]) / 2.0 < fields[11]:
+            # insufficient bitscore value
+            fit = False
+    elif ftype == 3:
+        # This is if the file format is 3 (LAST BlastTab+)
+        if fields[12] < 3 * fields[13]:
+            # subject longer than query
+            fit = False
+        if fields[2] < PIDENT_THRESHOLD:
+            # insufficient identity
+            fit = False
+        if float(fields[13]) / 2.0 < fields[11]:
+            # insufficient bitscore value
+            fit = False
+    else:
+        logger.error('Cannot determine fitness of HSP from table of type %s', ftype)
+        fit = False
 
-        coordinates.append(fields)
-    return coordinates
+    if qlen(fields, ftype) < LENGTH_THRESHOLD:
+        # insufficient alignment length
+       fit = False
+    if qcov(fields, ftype) < QCOV_THRESHOLD:
+        # insufficient query coverage
+        fit = False
+    if scov(fields, ftype) < SCOV_THRESHOLD:
+        # insufficient subject coverage
+        fit = False
+
+    return fit
 
 def optimal_number_of_clusters(wcss):
     x1, y1 = 2, wcss[0]
@@ -106,25 +175,55 @@ def optimal_number_of_clusters(wcss):
         return distances.index(max(distances)) + 2
     return None
 
-def qcov(hsp):
-    return float(qlen(hsp)) / float(hsp[1])
+def qcov(hsp, ftype):
+    if ftype == 0:  # Blast+ Custom
+        return float(qlen(hsp, ftype)) / float(hsp[1])
+    elif ftype == 1:  # LAST TAB
+        return float(qlen(hsp, ftype)) / float(hsp[10])
+    elif ftype == 2:  # LAST BlastTab
+        # Cannot perform this check
+        return 0.0
+    elif ftype == 3:  # LAST BlastTab+
+        return float(qlen(hsp, ftype)) / float(hsp[12])
+    return None
 
-def qlen(hsp):
-    return abs(hsp[11] - hsp[10]) + 1
+def qlen(hsp, ftype):
+    if ftype == 0:  # Blast+ Custom
+        return abs(hsp[11] - hsp[10]) + 1
+    elif ftype == 1:  # LAST TAB
+        return hsp[8]
+    elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
+        return abs(hsp[7] - hsp[6])
+    return None
 
-def scov(hsp):
-    return  float(slen(hsp)) / float(hsp[3]) 
+def scov(hsp, ftype):
+    if ftype == 0:  # BLAST+ Custom
+        return float(slen(hsp, ftype)) / float(hsp[3])
+    elif ftype == 1:  # Last TAB
+        return float(slen(hsp, ftype)) / float(hsp[5])
+    elif ftype == 2:  # LAST BlastTab
+        # Cannot perform this check
+        return 0.0
+    elif ftype == 3:  # LAST BlastTab+
+        return float(slen(hsp, ftype)) / float(hsp[13])
+    return None
 
-def slen(hsp):
-    return abs(hsp[13] - hsp[12]) + 1
+def slen(hsp, ftype):
+    if ftype == 0:  # BLAST+ Custom
+        return abs(hsp[13] - hsp[12]) + 1
+    elif ftype == 1:  # LAST TAB
+        return hsp[3]
+    elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
+        return abs(hsp[9] - hsp[8])
+    return None
 
 def main():
+    ftype = FTYPE
     start = time.time()
     logger.info('Begin')
     coordinate_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        #future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in ['seqs/Mecry_07G198110.1_blastx.tbl']}
-        future_map = {executor.submit(get_blastx_table_data, fname): fname for fname in SUBLIST}
+        future_map = {executor.submit(get_blastx_table_data, fname, ftype): fname for fname in ['seqs/Mecry_09G236430.1_blastx.tbl']}
         for future in concurrent.futures.as_completed(future_map):
             fname = future_map[future]
             try:
@@ -146,7 +245,12 @@ def main():
         sio = io.StringIO()
         sio.write(headers + '\n')
         for coords in coordinates:
-            sio.write('%s\t%s\n' % (coords[10], coords[11]))
+            if ftype == 0:
+                sio.write('%s\t%s\n' % (coords[10], coords[11]))
+            elif ftype == 1:
+                sio.write('%s\t%s\n' % (coords[7], coords[7] + coords[8] - 1))
+            elif ftype in (2, 3):
+                sio.write('%s\t%s\n' % (coords[6], coords[7]))
         sio.seek(0)
         #logger.debug('Raw table data:\n%s', sio.read())
         sio.seek(0)
