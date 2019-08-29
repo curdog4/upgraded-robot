@@ -26,6 +26,7 @@ https://jtemporal.com/kmeans-and-elbow-method/
 import concurrent.futures
 import os
 import sys
+import argparse
 import glob
 import io
 import logging
@@ -46,13 +47,12 @@ logConfData = json.loads(logConfContent)
 logging.config.dictConfig(logConfData)
 logger = logging.getLogger('DetectChimeras')
 
-FTYPE = 0
-DATA_DIR = 'seqs'
-DATA_FILES = glob.glob(os.path.join(DATA_DIR, '*_blastx.tbl'))
+BITSCORE_RATIO = 2.0
 LENGTH_THRESHOLD = 100
-QCOV_THRESHOLD = 0.30
-SCOV_THRESHOLD = 0.70
 PIDENT_THRESHOLD = 20.0
+QCOV_THRESHOLD = 0.30
+SCORE_RATIO = 1.0
+SCOV_THRESHOLD = 0.70
 
 def calculate_data(data):
     wcss = []
@@ -62,12 +62,15 @@ def calculate_data(data):
         wcss.append(kmeans.inertia_)
     return wcss
 
-def get_blastx_table_data(fname, ftype):
+def get_blastx_table_data(fname, ftype, args):
     with open(fname, 'r') as fdesc:
         fdata = fdesc.read()
     coordinates = []
-    for line in fdata.splitlines():
+    lines = fdata.splitlines()
+    hsp_cnt = len(lines)
+    for line in lines:
         if line.startswith('#'):
+            logger.debug('Skipping non-HSP line [%d/%d]: %s', lines.index(line) + 1, hsp_cnt, line)
             continue
         fields = line.split('\t')
         # Field value conversions to int or float
@@ -87,12 +90,14 @@ def get_blastx_table_data(fname, ftype):
         for idx in float_fields:
             fields[idx] = float(fields[idx])
 
-        if is_fit(fields, ftype):
+        if is_fit(fields, ftype, args):
             coordinates.append(fields)
+        else:
+            logger.debug('Discarding unfit HSP [%d/%d]: %s', lines.index(line) + 1, hsp_cnt, line)
     return coordinates
 
 
-def is_fit(fields, ftype):
+def is_fit(fields, ftype, args):
     '''Checks for 'fitness' of the result
     '''
     fit = True
@@ -100,24 +105,29 @@ def is_fit(fields, ftype):
         # This is if the file format is BLAST+ Custom
         if fields[1] < 3 * fields[3] :
             # subject longer than query
+            logger.debug('HSP subject longer than query: %s: %d < 3 * %d', fields[2], fields[1], fields[3])
             fit = False
-        if fields[5] < PIDENT_THRESHOLD:
+        if fields[5] < args.pident:
             # insufficient identity
+            logger.debug('HSP has insufficient percent identity: %.3f < %.3f', fields[5], args.pident)
             fit = False
-        if float(fields[3]) / 2.0 < fields[15]:
+        if float(fields[3]) / fields[15] < args.bitscore_ratio:
             # insufficient bitscore value
+            logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[3]), fields[15], args.bitscore_ratio)
             fit = False
     elif ftype == 1:
         # This is if the file format is 1 (LAST TAB)
         if fields[10] < 3 * fields[5]:
             # subject longer than query
+            logger.debug('HSP subject longer than query: %s: %d < 3 * %d', fields[1], fields[10], fields[5])
             fit = False
         # Cannot perform this check
-        #if fields[] < PIDENT_THRESHOLD:
+        #if fields[] < args.pident:
         #    # insufficent identity
         #    fit = False
-        if float(fields[0]) / float(fields[5]) < 1.0:
+        if float(fields[0]) / float(fields[5]) < args.score_ratio:
             # insufficient score value
+            logger.debug('HSP has insufficient score ratio: %.3f / %.3f < %.3f', float(fields[0]), fields[5], args.score_ratio)
             fit = False
     elif ftype == 2:
         # This is if the file format is 2 (LAST BlastTab)
@@ -125,35 +135,44 @@ def is_fit(fields, ftype):
         #if fields[] < 3 * fields[]:
         #    # subject longer than query
         #    fit = False
-        if fields[2] < PIDENT_THRESHOLD:
+        if fields[2] < args.pident:
             # insufficient identity
+            logger.debug('HSP has insufficient percent identity: %.3f < %.3f', fields[2], args.pident)
             fit = False
-        if float(fields[11]) / 2.0 < fields[11]:
-            # insufficient bitscore value
-            fit = False
+        # Cannot perform this check
+        #if float(fields[]) / fields[11] < args.bitscore_ratio:
+        #    # insufficient bitscore value
+        #    logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[]), fields[11], args.bitscore_ratio)
+        #    fit = False
     elif ftype == 3:
         # This is if the file format is 3 (LAST BlastTab+)
         if fields[12] < 3 * fields[13]:
             # subject longer than query
+            logger.debug('HSP subject longer than query: %s: %d < 3 * %d', fields[1], fields[12], fields[13])
             fit = False
-        if fields[2] < PIDENT_THRESHOLD:
+        if fields[2] < args.pident:
             # insufficient identity
+            logger.debug('HSP has insufficient percent identity: %.3f < %.3f', fields[2], args.pident)
             fit = False
-        if float(fields[13]) / 2.0 < fields[11]:
+        if float(fields[13]) / fields[11] < args.bitscore_ratio:
             # insufficient bitscore value
+            logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[13]), fields[11], args.bitscore_ratio)
             fit = False
     else:
         logger.error('Cannot determine fitness of HSP from table of type %s', ftype)
         fit = False
 
-    if qlen(fields, ftype) < LENGTH_THRESHOLD:
+    if qlen(fields, ftype) < args.qlen:
         # insufficient alignment length
-       fit = False
-    if qcov(fields, ftype) < QCOV_THRESHOLD:
-        # insufficient query coverage
+        logger.debug('HSP has insufficient query alignment length: %d < %d', qlen(fields, ftype), args.qlen)
         fit = False
-    if scov(fields, ftype) < SCOV_THRESHOLD:
+    if qcov(fields, ftype) < args.qcov:
+        # insufficient query coverage
+        logger.debug('HSP has insufficient query coverage: %.3f < %.3f', qcov(fields, ftype), args.qcov)
+        fit = False
+    if scov(fields, ftype) < args.scov:
         # insufficient subject coverage
+        logger.debug('HSP has insufficient subject coverage: %.3f < %.3f', scov(fields, ftype), args.scov)
         fit = False
 
     return fit
@@ -218,12 +237,56 @@ def slen(hsp, ftype):
     return None
 
 def main():
-    ftype = FTYPE
-    start = time.time()
+    ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+']
+    parser = argparse.ArgumentParser(description='Test Clustering')
+    loglevel_group = parser.add_mutually_exclusive_group()
+    loglevel_group.add_argument('--debug', action='store_true',
+                                help='Produce debugging output')
+    loglevel_group.add_argument('--verbose', action='store_true',
+                                help='Produce more verbose output')
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument('--file', type=str,
+                             help='Process single input file')
+    input_group.add_argument('--directory', type=str,
+                             help='Process *.tbl in this directory')
+    filter_group = parser.add_argument_group(title='Filtering options',
+                                             description='Options controlling HSP result filtering')
+    filter_group.add_argument('--bitscore-ratio', default=BITSCORE_RATIO, type=float,
+                              help='Minimum ratio of subject sequence length to bitscore (for BLAST* format results)')
+    filter_group.add_argument('--ftype', choices=ftype_list, required=True,
+                         help='Input file/s table format')
+    filter_group.add_argument('--pident', default=PIDENT_THRESHOLD, type=float,
+                              help='Minimum identity threshold for HSP')
+    filter_group.add_argument('--qcov', default=QCOV_THRESHOLD, type=float,
+                              help='Minimum query coverage threshold for HSP')
+    filter_group.add_argument('--qlen', default=LENGTH_THRESHOLD, type=int,
+                              help='Minimum query alignment sequence length for HSP')
+    filter_group.add_argument('--score-ratio', default=SCORE_RATIO, type=float,
+                              help='Minimum ratio of score to subject sequence length (for LAST TAB format results)')
+    filter_group.add_argument('--scov', default=SCOV_THRESHOLD, type=float,
+                              help='Minimum subject coverage threshold for HSP')
+    args, extra = parser.parse_known_args()
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    elif args.verbose:
+        logger.setLevel(logging.INFO)
+    file_list = []
+    if args.file:
+        if not os.path.exists(args.file):
+            raise OSError('File %s not found' % args.file)
+        file_list = [args.file]
+    elif args.directory:
+        if not os.path.exists(args.directory):
+            raise OSError('Directory %s not found' % args.directory)
+        file_list = glob.glob(os.path.join(args.directory, '*.tbl'))
+    if not file_list:
+        raise OSError('No files found to process')
+    ftype = ftype_list.index(args.ftype)
+    t_start = time.time()
     logger.info('Begin')
     coordinate_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        future_map = {executor.submit(get_blastx_table_data, fname, ftype): fname for fname in ['seqs/Mecry_09G236430.1_blastx.tbl']}
+        future_map = {executor.submit(get_blastx_table_data, fname, ftype, args): fname for fname in file_list}
         for future in concurrent.futures.as_completed(future_map):
             fname = future_map[future]
             try:
@@ -235,7 +298,6 @@ def main():
                     logger.info('%r table returned %d coordinates', fname, len(data))
                     coordinate_map[fname] = data
 
-    #headers = 'qseqid,qlen,sseqid,slen,qframe,pident,nident,length,mismatch,gapopen,qstart,qend,sstart,send,evalue,bitscore'
     headers = 'start\tend'
     for label, coordinates in coordinate_map.items():
         if len(coordinates) < 3:
@@ -301,8 +363,8 @@ def main():
             logger.info('Possible chimeric gene in region from %s to %s',
                         start, end)
 
-    end = time.time()
-    logger.info('Complete. Elapsed %.3f seconds.', end - start)
+    t_end = time.time()
+    logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
     return 0
 
 if __name__ == '__main__':

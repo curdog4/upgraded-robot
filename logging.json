@@ -22,6 +22,12 @@
         "handlers": ["console"],
         "level": "WARNING",
         "propagate": false
+    },
+    "DetectChimeras": {
+        "filters": [],
+        "handlers": ["console"],
+        "level": "WARNING",
+        "propagate": false
     }
   },
   "root": {},
