@@ -194,6 +194,14 @@ def optimal_number_of_clusters(wcss):
         return distances.index(max(distances)) + 2
     return None
 
+def overlap(start1, end1, start2, end2):
+    o_start = max(start1, start2)
+    o_end = min(end1, end2)
+    o_len = o_end - o_start
+    t_len = max(end1, end2) - min(start1, start2)
+    o_fraction = o_len / t_len
+    return o_fraction
+
 def qcov(hsp, ftype):
     if ftype == 0:  # Blast+ Custom
         return float(qlen(hsp, ftype)) / float(hsp[1])
@@ -357,11 +365,25 @@ def main():
             #             i, row[0], row[1], cn)
             cm[cn].append((row[0], row[1]))
         #logger.debug('Cluster sorted rows:\n%s', cm)
-        for cntr in cm:
+        for i in range(len(cm)):
+            cntr = cm[i]
+            if not cntr:
+                logger.warning('Empty cluster for %s: %s', label, cntr)
+                continue
             start = min([x[0] for x in cntr])
             end = max([x[1] for x in cntr])
             logger.info('Possible chimeric gene in region from %s to %s',
                         start, end)
+            for j in range(i+1, len(cm)):
+                _cntr = cm[j]
+                if not _cntr:
+                    logger.warning('Empty cluster for %s: %s. Cannot determine overlap.',
+                                   label, _cntr)
+                    continue
+                _start = min([x[0] for x in _cntr])
+                _end = max([x[1] for x in _cntr])
+                logger.info('Overlap for (%d, %d) and (%d, %d): %.3f', start, end, _start, _end,
+                            overlap(start, end, _start, _end))
 
     t_end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
