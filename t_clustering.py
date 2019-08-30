@@ -101,6 +101,10 @@ def is_fit(fields, ftype, args):
     '''Checks for 'fitness' of the result
     '''
     fit = True
+    _scov = scov(fields, ftype)
+    _slen = slen(fields, ftype)
+    _qcov = qcov(fields, ftype)
+    _qlen = qlen(fields, ftype)
     if ftype == 0:
         # This is if the file format is BLAST+ Custom
         if fields[1] < 3 * fields[3] :
@@ -154,27 +158,30 @@ def is_fit(fields, ftype, args):
             # insufficient identity
             logger.debug('HSP has insufficient percent identity: %.3f < %.3f', fields[2], args.pident)
             fit = False
-        if float(fields[13]) / fields[11] < args.bitscore_ratio:
-            # insufficient bitscore value
-            logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[13]), fields[11], args.bitscore_ratio)
+        #if float(fields[13]) / fields[11] < args.bitscore_ratio:
+        #    # insufficient bitscore value
+        #    logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[13]), fields[11], args.bitscore_ratio)
+        #    fit = False
+        if float(fields[14]) / float(_slen) < args.score_ratio:
+            # insufficient score value
+            logger.debug('HSP has insufficient score ratio: %.3f / %.3f < %.3f', float(fields[14]), _slen, args.score_ratio)
             fit = False
     else:
         logger.error('Cannot determine fitness of HSP from table of type %s', ftype)
         fit = False
 
-    if qlen(fields, ftype) < args.qlen:
+    if _qlen < args.qlen:
         # insufficient alignment length
-        logger.debug('HSP has insufficient query alignment length: %d < %d', qlen(fields, ftype), args.qlen)
+        logger.debug('HSP has insufficient query alignment length: %d < %d', _qlen, args.qlen)
         fit = False
-    if qcov(fields, ftype) < args.qcov:
+    if _qcov < args.qcov:
         # insufficient query coverage
-        logger.debug('HSP has insufficient query coverage: %.3f < %.3f', qcov(fields, ftype), args.qcov)
+        logger.debug('HSP has insufficient query coverage: %.3f < %.3f', _qcov, args.qcov)
         fit = False
-    if scov(fields, ftype) < args.scov:
+    if _scov < args.scov:
         # insufficient subject coverage
-        logger.debug('HSP has insufficient subject coverage: %.3f < %.3f', scov(fields, ftype), args.scov)
+        logger.debug('HSP has insufficient subject coverage: %.3f < %.3f', _scov, args.scov)
         fit = False
-
     return fit
 
 def optimal_number_of_clusters(wcss):
@@ -220,7 +227,7 @@ def qlen(hsp, ftype):
     elif ftype == 1:  # LAST TAB
         return hsp[8]
     elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
-        return abs(hsp[7] - hsp[6])
+        return abs(hsp[7] - hsp[6]) + 1
     return None
 
 def scov(hsp, ftype):
@@ -241,7 +248,7 @@ def slen(hsp, ftype):
     elif ftype == 1:  # LAST TAB
         return hsp[3]
     elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
-        return abs(hsp[9] - hsp[8])
+        return abs(hsp[9] - hsp[8]) + 1
     return None
 
 def main():
@@ -355,33 +362,44 @@ def main():
         km = KMeans(n_clusters=n)
         clusters = km.fit_predict(data_transformed)
         #logger.debug('Clusters:\n%s', clusters)
-        cm = []
+        centroids = []
         for i in range(n):
-            cm.append([])
+            centroids.append([])
         for i in range(len(data.index)):
             row = data.iloc[i]
             cn =  clusters[i]
             #logger.debug('For row %d (%s, %s) the cluster number is %d',
             #             i, row[0], row[1], cn)
-            cm[cn].append((row[0], row[1]))
+            centroids[cn].append((row[0], row[1]))
         #logger.debug('Cluster sorted rows:\n%s', cm)
-        for i in range(len(cm)):
-            cntr = cm[i]
-            if not cntr:
-                logger.warning('Empty cluster for %s: %s', label, cntr)
+        for i in range(len(centroids)):
+            centroid = centroids[i]
+            if not centroid:
+                logger.warning('Empty cluster for %s: %s', label, centroid)
                 continue
-            start = min([x[0] for x in cntr])
-            end = max([x[1] for x in cntr])
+            start = min([x[0] for x in centroid])
+            end = max([x[1] for x in centroid])
             logger.info('Possible chimeric gene in region from %s to %s',
                         start, end)
-            for j in range(i+1, len(cm)):
-                _cntr = cm[j]
-                if not _cntr:
+            clen = abs(end - start) + 1
+            if ftype == 0:
+                qlen = coordinates[0][1]
+            elif ftype == 1:
+                qlen = coordinates[0][10]
+            elif ftype == 3:
+                qlen = coordinates[0][12]
+
+            if qlen:
+                ccov = float(clen) / float(qlen)
+                logger.info('Chimeric sequence covers %.3f percent of the query sequence %s', ccov * 100.0, label)
+            for j in range(i+1, len(centroids)):
+                _centroid = centroids[j]
+                if not _centroid:
                     logger.warning('Empty cluster for %s: %s. Cannot determine overlap.',
-                                   label, _cntr)
+                                   label, _centroid)
                     continue
-                _start = min([x[0] for x in _cntr])
-                _end = max([x[1] for x in _cntr])
+                _start = min([x[0] for x in _centroid])
+                _end = max([x[1] for x in _centroid])
                 logger.info('Overlap for (%d, %d) and (%d, %d): %.3f', start, end, _start, _end,
                             overlap(start, end, _start, _end))
 
