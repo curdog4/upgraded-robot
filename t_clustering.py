@@ -48,6 +48,7 @@ logging.config.dictConfig(logConfData)
 logger = logging.getLogger('DetectChimeras')
 
 BITSCORE_RATIO = 2.0
+CCOV_THRESHOLD = 0.50
 LENGTH_THRESHOLD = 100
 PIDENT_THRESHOLD = 20.0
 QCOV_THRESHOLD = 0.30
@@ -268,6 +269,8 @@ def main():
                                              description='Options controlling HSP result filtering')
     filter_group.add_argument('--bitscore-ratio', default=BITSCORE_RATIO, type=float,
                               help='Minimum ratio of subject sequence length to bitscore (for BLAST* format results)')
+    filter_group.add_argument('--ccov', default=CCOV_THRESHOLD, type=float,
+                              help='Maximum ratio of chimeric range length to query sequence length')
     filter_group.add_argument('--ftype', choices=ftype_list, required=True,
                          help='Input file/s table format')
     filter_group.add_argument('--pident', default=PIDENT_THRESHOLD, type=float,
@@ -312,9 +315,13 @@ def main():
                 if data:
                     logger.info('%r table returned %d coordinates', fname, len(data))
                     coordinate_map[fname] = data
+    logger.info('Processing %d results', len(coordinate_map))
 
     headers = 'start\tend'
+    cntr = 0
     for label, coordinates in coordinate_map.items():
+        cntr += 1
+        logger.info('Percent completion: %.3f', float(cntr) / float(len(coordinate_map)) * 100.0)
         if len(coordinates) < 3:
             logger.error('Insufficient records to continue for %s', label)
             continue
@@ -392,6 +399,9 @@ def main():
             if qlen:
                 ccov = float(clen) / float(qlen)
                 logger.info('Chimeric sequence covers %.3f percent of the query sequence %s', ccov * 100.0, label)
+                if ccov > args.ccov:
+                    logger.warning('Dropping range (%d, %d), too long to be likely chimeric', start, end)
+                    continue
             for j in range(i+1, len(centroids)):
                 _centroid = centroids[j]
                 if not _centroid:
