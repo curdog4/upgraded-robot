@@ -48,7 +48,7 @@ logging.config.dictConfig(logConfData)
 logger = logging.getLogger('DetectChimeras')
 
 BITSCORE_RATIO = 2.0
-CCOV_THRESHOLD = 0.50
+CCOV_THRESHOLD = 0.60
 LENGTH_THRESHOLD = 100
 PIDENT_THRESHOLD = 20.0
 QCOV_THRESHOLD = 0.30
@@ -205,8 +205,8 @@ def optimal_number_of_clusters(wcss):
 def overlap(start1, end1, start2, end2):
     o_start = max(start1, start2)
     o_end = min(end1, end2)
-    o_len = o_end - o_start
-    t_len = max(end1, end2) - min(start1, start2)
+    o_len = abs(o_end - o_start)
+    t_len = max(start1, start2, end1, end2) - min(start1, start2, end1, end2)
     o_fraction = o_len / t_len
     return o_fraction
 
@@ -251,6 +251,22 @@ def slen(hsp, ftype):
     elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
         return abs(hsp[9] - hsp[8]) + 1
     return None
+
+def separated(hsp1, hsp2):
+    ''' given two hsps, return True if
+    overlap less than the smaller of:
+    * 20% of the shorter length
+    * 60 bp
+    '''
+    length1 = abs(hsp1[1] - hsp1[0])
+    length2 = abs(hsp2[1] - hsp2[0])
+    start = min(int(hsp1[0]), int(hsp1[1]), int(hsp2[0]), int(hsp2[1]))
+    end = max(int(hsp1[0]), int(hsp1[1]), int(hsp2[0]), int(hsp2[1]))
+    overlap = length1 + length2 - (end - start) + 1
+    # value of overlap can < 0 but only the upper limit maters
+    if overlap < min(60, 0.2 * min(length1, length2)):
+        return True
+    return False
 
 def main():
     ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+']
@@ -412,6 +428,9 @@ def main():
                 _end = max([x[1] for x in _centroid])
                 logger.info('Overlap for (%d, %d) and (%d, %d): %.3f', start, end, _start, _end,
                             overlap(start, end, _start, _end))
+                if not separated((start, end), (_start, _end)):
+                    logger.info('Ranges (%s, %s) and (%s, %s) not separated, should merge',
+                                start, end, _start, _end)
 
     t_end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
