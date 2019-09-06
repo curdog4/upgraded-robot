@@ -50,10 +50,65 @@ logger = logging.getLogger('DetectChimeras')
 BITSCORE_RATIO = 2.0
 CCOV_THRESHOLD = 0.60
 LENGTH_THRESHOLD = 100
+NUM_THREADS = 12
 PIDENT_THRESHOLD = 20.0
 QCOV_THRESHOLD = 0.30
 SCORE_RATIO = 1.0
 SCOV_THRESHOLD = 0.70
+
+def calculate_clusters(label, ftype, coordinates):
+    if len(coordinates) < 3:
+        logger.error('Insufficient records to continue for %s', label)
+        return None
+
+    headers = 'start\tend'
+    sio = io.StringIO()
+    sio.write(headers + '\n')
+    for coords in coordinates:
+        if ftype == 0:
+            sio.write('%s\t%s\n' % (coords[10], coords[11]))
+        elif ftype == 1:
+            sio.write('%s\t%s\n' % (coords[7], coords[7] + coords[8] - 1))
+        elif ftype in (2, 3):
+            sio.write('%s\t%s\n' % (coords[6], coords[7]))
+    sio.seek(0)
+    #logger.debug('Raw table data for %s:\n%s', label, sio.read())
+    sio.seek(0)
+    data = pd.read_csv(sio, sep='\t')
+    #logger.debug('Data for %s:\n%s', label, data)
+
+    mms = MinMaxScaler()
+    mms.fit(data)
+    data_transformed = mms.transform(data)
+    #logger.debug('Data Xform for %s:\n%s', label, data_transformed)
+
+    wcss = []
+    K = range(1, min(len(coordinates), 15))
+    for k in K:
+        km = KMeans(n_clusters=k)
+        km = km.fit(data_transformed)
+        wcss.append(km.inertia_)
+
+    n = optimal_number_of_clusters(wcss)
+    logger.info('Predicted optimal number of clusters for %s: %s', label, n)
+    if not n:
+        logger.error('Number of clusters could not be calculated for %s', label)
+        return None
+
+    km = KMeans(n_clusters=n)
+    clusters = km.fit_predict(data_transformed)
+    #logger.debug('Clusters for %s:\n%s', label, clusters)
+    centroids = []
+    for i in range(n):
+        centroids.append([])
+    for i in range(len(data.index)):
+        row = data.iloc[i]
+        cn =  clusters[i]
+        #logger.debug('For %s row %d (%s, %s) the cluster number is %d',
+        #             label, i, row[0], row[1], cn)
+        centroids[cn].append((row[0], row[1]))
+    #logger.debug('Cluster sorted rows for %s:\n%s', label, cm)
+    return centroids
 
 def calculate_data(data):
     wcss = []
@@ -271,6 +326,8 @@ def separated(hsp1, hsp2):
 def main():
     ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+']
     parser = argparse.ArgumentParser(description='Test Clustering')
+    parser.add_argument('--num-threads', type=int, default=NUM_THREADS,
+                        help='Number of CPU threads to use')
     loglevel_group = parser.add_mutually_exclusive_group()
     loglevel_group.add_argument('--debug', action='store_true',
                                 help='Produce debugging output')
@@ -318,8 +375,10 @@ def main():
     ftype = ftype_list.index(args.ftype)
     t_start = time.time()
     logger.info('Begin')
+    ##
+    # Ingest input files
     coordinate_map = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_threads) as executor:
         future_map = {executor.submit(get_blastx_table_data, fname, ftype, args): fname for fname in file_list}
         for future in concurrent.futures.as_completed(future_map):
             fname = future_map[future]
@@ -331,70 +390,35 @@ def main():
                 if data:
                     logger.info('%r table returned %d coordinates', fname, len(data))
                     coordinate_map[fname] = data
-    logger.info('Processing %d results', len(coordinate_map))
 
-    headers = 'start\tend'
+    ##
+    # perform k-means clustering to find optimized centroids
+    logger.info('Processing %d extracted results', len(coordinate_map))
     cntr = 0
-    for label, coordinates in coordinate_map.items():
-        cntr += 1
-        logger.info('Percent completion: %.3f', float(cntr) / float(len(coordinate_map)) * 100.0)
-        if len(coordinates) < 3:
-            logger.error('Insufficient records to continue for %s', label)
-            continue
+    cluster_map = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_threads) as executor:
+        future_map = {executor.submit(calculate_clusters, label, ftype, coordinates): label for label, coordinates in coordinate_map.items()}
+        for future in concurrent.futures.as_completed(future_map):
+            cntr += 1
+            logger.info('Percent completion: %.3f', float(cntr) / float(len(coordinate_map)) * 100.0)
+            label = future_map[future]
+            try:
+                data = future.result()
+            except Exception as exc:
+                logger.error('%r generated on exception: %s', label, exc)
+            else:
+                if data:
+                    logger.info('%r return %d clusters', label, len(data))
+                    cluster_map[label] = data
 
-        sio = io.StringIO()
-        sio.write(headers + '\n')
-        for coords in coordinates:
-            if ftype == 0:
-                sio.write('%s\t%s\n' % (coords[10], coords[11]))
-            elif ftype == 1:
-                sio.write('%s\t%s\n' % (coords[7], coords[7] + coords[8] - 1))
-            elif ftype in (2, 3):
-                sio.write('%s\t%s\n' % (coords[6], coords[7]))
-        sio.seek(0)
-        #logger.debug('Raw table data:\n%s', sio.read())
-        sio.seek(0)
-        data = pd.read_csv(sio, sep='\t')
-        #logger.debug('Data:\n%s', data)
+    ##
+    # Evaluate cluster results to find potential chimeras
+    logger.info('Processing %d clustered results', len(cluster_map))
+    for label, centroids in cluster_map.items():
+        coordinates = coordinate_map[label]
+        #logger.debug('Cluster sorted rows for %s:\n%s', label, centroids)
 
-        mms = MinMaxScaler()
-        mms.fit(data)
-        data_transformed = mms.transform(data)
-        #logger.debug('Data Xform:\n%s', data_transformed)
-
-        wcss = []
-        K = range(1, min(len(coordinates), 15))
-        for k in K:
-            km = KMeans(n_clusters=k)
-            km = km.fit(data_transformed)
-            wcss.append(km.inertia_)
-
-        n = optimal_number_of_clusters(wcss)
-        logger.info('Predicted optimal number of clusters for %s: %s', label, n)
-        if not n:
-            logger.error('Number of clusters could not be calculated for %s', label)
-            continue
-
-        '''
-        plt.plot(K, wcss, 'bx-')
-        plt.xlabel('k')
-        plt.ylabel('wcss')
-        plt.title('Elbow Method For Optimal k (%s)' % label)
-        plt.show()
-        '''
-        km = KMeans(n_clusters=n)
-        clusters = km.fit_predict(data_transformed)
-        #logger.debug('Clusters:\n%s', clusters)
-        centroids = []
-        for i in range(n):
-            centroids.append([])
-        for i in range(len(data.index)):
-            row = data.iloc[i]
-            cn =  clusters[i]
-            #logger.debug('For row %d (%s, %s) the cluster number is %d',
-            #             i, row[0], row[1], cn)
-            centroids[cn].append((row[0], row[1]))
-        #logger.debug('Cluster sorted rows:\n%s', cm)
+        merged = []
         for i in range(len(centroids)):
             centroid = centroids[i]
             if not centroid:
@@ -417,7 +441,7 @@ def main():
                 logger.info('Chimeric sequence covers %.3f percent of the query sequence %s', ccov * 100.0, label)
                 if ccov > args.ccov:
                     logger.warning('Dropping range (%d, %d), too long to be likely chimeric', start, end)
-                    continue
+                    break
             for j in range(i+1, len(centroids)):
                 _centroid = centroids[j]
                 if not _centroid:
@@ -429,8 +453,19 @@ def main():
                 logger.info('Overlap for (%d, %d) and (%d, %d): %.3f', start, end, _start, _end,
                             overlap(start, end, _start, _end))
                 if not separated((start, end), (_start, _end)):
-                    logger.info('Ranges (%s, %s) and (%s, %s) not separated, should merge',
+                    logger.info('Ranges (%s, %s) and (%s, %s) not separated, merging',
                                 start, end, _start, _end)
+                    centroid[0] = min(start, end, _start, _end)
+                    centroid[1] = max(start, end, _start, _end)
+                is_new = True
+                for i in range(len(merged)):
+                    if separated(merged[i], centroid):
+                        is_new = False
+                        merged[i][0] = min(merged[i][0], centroid[0])
+                        merged[i][1] = max(merged[i][1], centroid[1])
+                if is_new:
+                    merged.append(centroid)
+        logger.info('Merged ranges for %s: %s', label, merged)
 
     t_end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
