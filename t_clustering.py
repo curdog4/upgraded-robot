@@ -33,8 +33,12 @@ import logging
 import logging.config
 import json
 import math
+import pprint
 import time
 
+from Bio import SeqIO
+from Bio.Blast.Applications import NcbiblastxCommandline
+import gffutils
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
@@ -49,6 +53,7 @@ logger = logging.getLogger('DetectChimeras')
 
 BITSCORE_RATIO = 2.0
 CCOV_THRESHOLD = 0.60
+REFDB_FILE = '/data/gpfs/home/dcurdie/scratch/UniProtKB/uniprot_sprot_plants.fa'
 LENGTH_THRESHOLD = 100
 NUM_THREADS = 12
 PIDENT_THRESHOLD = 20.0
@@ -338,6 +343,20 @@ def main():
                              help='Process single input file')
     input_group.add_argument('--directory', type=str,
                              help='Process *.tbl in this directory')
+
+
+    data_group = parser.add_argument_group(title='Data Files',
+                                           description='Required data files')
+    data_group.add_argument('--gff', required=True,
+                             help='Input GFF file')
+    data_group.add_argument('--genome', required=True,
+                             help='Input genome FASTA file')
+    data_group.add_argument('--refdb', default=REFDB_FILE,
+                             help='Reference protein FASTA DB file for BLAST')
+    data_group.add_argument('--transcriptome', required=True,
+                             help='Input transcriptome FASTA file')
+
+
     filter_group = parser.add_argument_group(title='Filtering options',
                                              description='Options controlling HSP result filtering')
     filter_group.add_argument('--bitscore-ratio', default=BITSCORE_RATIO, type=float,
@@ -414,7 +433,9 @@ def main():
     ##
     # Evaluate cluster results to find potential chimeras
     logger.info('Processing %d clustered results', len(cluster_map))
+    merge_map = {}
     for label, centroids in cluster_map.items():
+        merge_map.setdefault(label, [])
         coordinates = coordinate_map[label]
         #logger.debug('Cluster sorted rows for %s:\n%s', label, centroids)
 
@@ -455,20 +476,37 @@ def main():
                 if not separated((start, end), (_start, _end)):
                     logger.info('Ranges (%s, %s) and (%s, %s) not separated, merging',
                                 start, end, _start, _end)
-                    centroid[0] = min(start, end, _start, _end)
-                    centroid[1] = max(start, end, _start, _end)
-                is_new = True
-                for i in range(len(merged)):
-                    if separated(merged[i], centroid):
-                        is_new = False
-                        merged[i][0] = min(merged[i][0], centroid[0])
-                        merged[i][1] = max(merged[i][1], centroid[1])
-                if is_new:
-                    merged.append(centroid)
+                    start = min(start, end, _start, _end)
+                    end = max(start, end, _start, _end)
+            is_new = True
+            for i in range(len(merged)):
+                if not separated(merged[i], (start, end)):
+                    is_new = False
+                    merged[i] = (min(merged[i][0], start), max(merged[i][1], end))
+            if is_new:
+                merged.append((start, end))
+        merged.sort()
         logger.info('Merged ranges for %s: %s', label, merged)
+        if merged and len(merged) > 1:
+            merge_map[label].extend(merged)
+        else:
+            merge_map.pop(label)
 
     t_end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
+    logger.info('Final chimeric map:\n%s', pprint.pformat(merge_map))
+    '''
+    dbfile = os.path.splitext(os.path.basename(args.gff))[0] + '.db'
+    dbfile = os.path.join(args.outdir, dbfile)
+    if not os.path.exists(dbfile):
+        logger.info('Initialize the database...')
+        db = gffutils.create_db(args.gff, dbfile, keep_order=False, merge_strategy='create_unique', id_spec=['ID'], sort_attribute_values=False)
+        db.execute('CREATE INDEX coordinate_index ON features(seqid, start, end)')
+    else:
+        logger.info('Loading genome features from %s', dbfile)
+        db = gffutils.FeatureDB(dbfile)
+    '''
+
     return 0
 
 if __name__ == '__main__':
