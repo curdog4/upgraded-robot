@@ -17,6 +17,11 @@ LAST BlastTab+ Table Field Values:
 5-gap opens 6-q. start 7-q. end 8-s. start 9-s. end 10-evalue 11-bit score
 12-query length 13-subject length
 
+Exonerate Custom formatting:
+%ti\t%qi\t%pi\t%em\t%tab\t%tae\t%tal\t%qab\t%qae\t%qal\t%tl\t%ql\t%s
+0-target id 1-query id 2-% identity 3-mismatches 4-t.start 5-t.end 6-t.length
+7-q.start 8-q.end 9-q.length 10-target length 11-query length 12-raw score
+
 Logic borrowed from:
 https://blog.cambridgespark.com/how-to-determine-the-optimal-number-of-clusters-for-k-means-clustering-14f27070048f
 https://jtemporal.com/kmeans-and-elbow-method/
@@ -76,6 +81,8 @@ def calculate_clusters(label, ftype, coordinates):
             sio.write('%s\t%s\n' % (coords[7], coords[7] + coords[8] - 1))
         elif ftype in (2, 3):
             sio.write('%s\t%s\n' % (coords[6], coords[7]))
+        elif ftype == 4:
+            sio.write('%s\t%s\n' % (coords[4], coords[5]))
     sio.seek(0)
     #logger.debug('Raw table data for %s:\n%s', label, sio.read())
     sio.seek(0)
@@ -146,6 +153,9 @@ def get_blastx_table_data(fname, ftype, args):
         elif ftype == 3:  # LAST BlastTab+
             int_fields = [3, 4, 5, 6, 7, 8, 9, 12, 13]
             float_fields = [2, 11]
+        elif ftype == 4: # Exonerate ryo output
+            int_fields = [x for x in range(3,13)]
+            float_fields = [2]
         for idx in int_fields:
             fields[idx] = int(fields[idx])
         for idx in float_fields:
@@ -227,6 +237,24 @@ def is_fit(fields, ftype, args):
             # insufficient score value
             logger.debug('HSP has insufficient score ratio: %.3f / %.3f < %.3f', float(fields[14]), _slen, args.score_ratio)
             fit = False
+    elif ftype == 4:
+        if fields[10] < 3 * fields[11]:
+            # subject (query) longer than query (target)
+            logger.debug('HSP subject longer than query: %s: %d < 3 * %d', fields[1], fields[10], fields[11])
+            fit = False
+        if fields[2] < args.pident:
+            logger.debug('HSP has insufficient percent identity: %.3f < %.3f', fields[2], args.pident)
+            fit = False
+        # Cannot perform this check
+        #if float(fields[]) / fields[11] < args.bitscore_ratio:
+        #    # insufficient bitscore value
+        #    logger.debug('HSP has insufficient bitscore ratio: %.3f / %.3f < %.3f', float(fields[]), fields[11], args.bitscore_ratio)
+        #    fit = False
+        # Not sure of values for this, yet...
+        #if float(fields[12]) / float(_slen) < args.score_ratio:
+        #    # insufficient score value
+        #    logger.debug('HSP has insufficient score ratio: %.3f / %.3f < %.3f', float(fields[14]), _slen, args.score_ratio)
+        #    fit = False
     else:
         logger.error('Cannot determine fitness of HSP from table of type %s', ftype)
         fit = False
@@ -280,6 +308,8 @@ def qcov(hsp, ftype):
         return 0.0
     elif ftype == 3:  # LAST BlastTab+
         return float(qlen(hsp, ftype)) / float(hsp[12])
+    elif ftype == 4:  # Exonerate ryo output
+        return float(qlen(hsp, ftype)) / float(hsp[10])
     return None
 
 def qlen(hsp, ftype):
@@ -289,6 +319,8 @@ def qlen(hsp, ftype):
         return hsp[8]
     elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
         return abs(hsp[7] - hsp[6]) + 1
+    elif ftype == 4:  # Exonerate ryo output
+        return hsp[6]
     return None
 
 def scov(hsp, ftype):
@@ -301,6 +333,8 @@ def scov(hsp, ftype):
         return 0.0
     elif ftype == 3:  # LAST BlastTab+
         return float(slen(hsp, ftype)) / float(hsp[13])
+    elif ftype == 4:  # Exonerate ryo output
+        return float(slen(hsp, ftype)) / float(hsp[11])
     return None
 
 def slen(hsp, ftype):
@@ -310,6 +344,8 @@ def slen(hsp, ftype):
         return hsp[3]
     elif ftype in (2, 3):  # LAST BlastTab and BlastTab+
         return abs(hsp[9] - hsp[8]) + 1
+    elif ftype == 4:  # Exonerate ryo output
+        return hsp[9]
     return None
 
 def separated(hsp1, hsp2):
@@ -329,7 +365,7 @@ def separated(hsp1, hsp2):
     return False
 
 def main():
-    ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+']
+    ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+', 'exonerate']
     parser = argparse.ArgumentParser(description='Test Clustering')
     parser.add_argument('--num-threads', type=int, default=NUM_THREADS,
                         help='Number of CPU threads to use')
@@ -456,6 +492,8 @@ def main():
                 qlen = coordinates[0][10]
             elif ftype == 3:
                 qlen = coordinates[0][12]
+            elif ftype == 4:
+                qlen = coordinates[0][10]
 
             if qlen:
                 ccov = float(clen) / float(qlen)
