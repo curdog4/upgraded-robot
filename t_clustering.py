@@ -43,7 +43,9 @@ import time
 
 from Bio import SeqIO
 from Bio.Blast.Applications import NcbiblastxCommandline
+from ckmeans import ckmeans
 import gffutils
+import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
@@ -57,7 +59,7 @@ logging.config.dictConfig(logConfData)
 logger = logging.getLogger('DetectChimeras')
 
 BITSCORE_RATIO = 2.0
-CCOV_THRESHOLD = 0.60
+CCOV_THRESHOLD = 0.80
 REFDB_FILE = '/data/gpfs/home/dcurdie/scratch/UniProtKB/uniprot_sprot_plants.fa'
 LENGTH_THRESHOLD = 100
 NUM_THREADS = 12
@@ -66,7 +68,60 @@ QCOV_THRESHOLD = 0.30
 SCORE_RATIO = 1.0
 SCOV_THRESHOLD = 0.70
 
-def calculate_clusters(label, ftype, coordinates):
+
+def calculate_clusters_ckmeans(label, ftype, aln_hsps):
+    if len(coordinates) < 3:
+        logger.error('Insufficient records to continue for %s', label)
+        return None
+    _start_idx = 10
+    _end_idx = 11 
+    if ftype == 3:
+        _start_idx = 6
+        _end_idx = 7
+    elif ftype == 4:
+        _start_idx = 4
+        _end_idx = 5
+    aln_ends = []
+    aln_weights = []
+    logger.info('Parsing %s data into lists', label)
+    for hsp in aln_hsps:
+        _end = hsp[_end_idx]
+        _weight = float(qlen(hsp, ftype)) / float(hsp[1])
+        if ftype == 3:  # LAST BlastTab+
+            _weight = float(hsp[3]) / float(hsp[12])
+        elif ftype == 4:  # Exonerate custom
+            _weight = hsp[6] / hsp[10]
+        aln_ends.append(_end)
+        aln_weights.append(_weight)
+    logger.info('Instantiating numpy arrays for %s', label)
+    array_ends = np.array(aln_ends)
+    array_weights = np.array(aln_weights)
+    logger.info('Calculating ckmeans 1d clustering for %S', label)
+    #clusters = ckmeans(array_ends, k=(2, 7), weights=array_weights)
+    _min_k = len(list(set(aln_ends)))
+    if _min_k < 2:
+        logger.error('Unable to cluster %s with %d unique values', label, _min_k)
+        return None
+    elif _min_k > 3:
+        k = (2, 3)
+    else:
+        k = 2
+    clusters = ckmeans(array_ends, k=k)
+    logger.info('Ckmeans result for %s: number of clusters:%d, centroids:%s', label, len(clusters.centers), clusters.centers)
+    logger.info('Processing results for %s', label)
+    centroids = []
+    for c_idx in range(len(clusters.centers)):
+        centroids.append([])
+        _members = []
+        for m_idx in range(len(clusters.clustering)):
+            if clusters.clustering[m_idx] == c_idx:
+                _members.append(aln_hsps[m_idx])
+        _start = min([int(x[_start_idx]) for x in _members])
+        _end = max([int(x[_end_idx]) for x in _members])
+    return centroids
+
+
+def calculate_clusters_kmeans(label, ftype, coordinates):
     if len(coordinates) < 3:
         logger.error('Insufficient records to continue for %s', label)
         return None
@@ -120,6 +175,9 @@ def calculate_clusters(label, ftype, coordinates):
         #             label, i, row[0], row[1], cn)
         centroids[cn].append((row[0], row[1]))
     #logger.debug('Cluster sorted rows for %s:\n%s', label, cm)
+    for i in range(len(centroids)):
+        centroids[i] = (min([x[0] for x in centroids[i]]),
+                        max([x[1] for x in centroids[i]]))
     return centroids
 
 def calculate_data(data):
@@ -366,9 +424,14 @@ def separated(hsp1, hsp2):
 
 def main():
     ftype_list = ['custom', 'lasttab', 'blasttab', 'blasttab+', 'exonerate']
+    cluster_algorithms = ['kmeans', 'ckmeans']
     parser = argparse.ArgumentParser(description='Test Clustering')
     parser.add_argument('--num-threads', type=int, default=NUM_THREADS,
                         help='Number of CPU threads to use')
+    clustering_group = parser.add_argument_group(title='Clustering options',
+                                                 description='Options for clustering/partitioning the data')
+    clustering_group.add_argument('--algorithm', choices=cluster_algorithms, default='kmeans',
+                                  help='Clustering/partitioning algorithm to use')
     loglevel_group = parser.add_mutually_exclusive_group()
     loglevel_group.add_argument('--debug', action='store_true',
                                 help='Produce debugging output')
@@ -428,6 +491,9 @@ def main():
     if not file_list:
         raise OSError('No files found to process')
     ftype = ftype_list.index(args.ftype)
+    if args.algorithm == 'ckmeans' and ftype in [1, 2]:
+        logger.error('Algorithm ckmeans not supported for type %s', args.ftype)
+        return 1
     t_start = time.time()
     logger.info('Begin')
     ##
@@ -451,8 +517,9 @@ def main():
     logger.info('Processing %d extracted results', len(coordinate_map))
     cntr = 0
     cluster_map = {}
+    cluster_func = eval('calculate_clusters_%s' % args.algorithm)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_threads) as executor:
-        future_map = {executor.submit(calculate_clusters, label, ftype, coordinates): label for label, coordinates in coordinate_map.items()}
+        future_map = {executor.submit(cluster_func, label, ftype, coordinates): label for label, coordinates in coordinate_map.items()}
         for future in concurrent.futures.as_completed(future_map):
             cntr += 1
             logger.info('Percent completion: %.3f', float(cntr) / float(len(coordinate_map)) * 100.0)
@@ -465,7 +532,7 @@ def main():
                 if data:
                     logger.info('%r return %d clusters', label, len(data))
                     cluster_map[label] = data
-
+    '''
     ##
     # Evaluate cluster results to find potential chimeras
     logger.info('Processing %d clustered results', len(cluster_map))
@@ -529,10 +596,12 @@ def main():
             merge_map[label].extend(merged)
         else:
             merge_map.pop(label)
+    '''
 
     t_end = time.time()
     logger.info('Complete. Elapsed %.3f seconds.', t_end - t_start)
-    logger.info('Final chimeric map:\n%s', pprint.pformat(merge_map))
+    #logger.info('Final chimeric map:\n%s', pprint.pformat(merge_map))
+    logger.info('Final chimeric map:\n%s', pprint.pformat(cluster_map))
     '''
     dbfile = os.path.splitext(os.path.basename(args.gff))[0] + '.db'
     dbfile = os.path.join(args.outdir, dbfile)
