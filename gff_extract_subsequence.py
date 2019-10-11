@@ -41,14 +41,13 @@ def adjust_coords(seq_range, mrna, gene, exons, pad_factor):
     remaining = feature_len = abs(seq_range[1] - seq_range[0])
     padding = int(math.ceil(pad_factor * float(feature_len)))
     logger.debug('Feature length is %d, padding is %d', feature_len, padding)
-    exons = sorted(exons)
+    exons = sorted(list(set(exons)))
     if gene.strand == '-':
         exons.reverse()
     logger.debug('Exons: %s', exons)
     logger.debug('Exonic length: %d', sum([x[1] - x[0] for x in exons]))
     for exon in exons:
         logger.debug('Exon %s, length %d', exon, exon[1] - exon[0])
-        exon_range = range(exon[0], exon[1]+1)
         if gene.strand == '-':
             if not stop_pos:
                 if exon[1] - offset < exon[0]:
@@ -145,6 +144,9 @@ def get_gff_info(db, seq_id, seq_range, pad_factor):
     exons = []
     for f in db.children(feature_id):
         if f.featuretype == 'exon':
+            if not f.attributes.get('Parent')[0].endswith('.1'):
+                logger.warning('Skipping non-primary transcript exon: %s', f)
+                continue
             exons.append((f.start, f.stop))
     if len(exons) == 0:
         logger.error('No exons found for feature %s', feature_id)
@@ -193,13 +195,15 @@ def main():
         except TypeError:
             logger.error('Invalid sequence range component value %s. Must be an integer.', e)
             sys.exit(1)
-    seq_range = tuple(set(seq_range))
+    seq_range.sort()
+    seq_range = tuple(seq_range)
     if args.debug:
         logger.setLevel(logging.DEBUG)
     elif args.verbose:
         logger.setLevel(logging.INFO)
     logger.info('Starting')
     logger.debug('Args=%s extra=%s', args, extra)
+    logger.debug('Sequence range: %s', seq_range)
     dbfile = os.path.splitext(os.path.basename(args.gff))[0] + '.db'
     dbfile = os.path.join(args.outdir, dbfile)
     if not os.path.exists(dbfile):
